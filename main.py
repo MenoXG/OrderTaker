@@ -1,10 +1,12 @@
 import os
+import re
 import logging
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 import asyncio
 from threading import Thread
+from datetime import datetime
 
 # إعداد logging
 logging.basicConfig(
@@ -18,214 +20,307 @@ app = Flask(__name__)
 # متغيرات البيئة
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TELEGRAM_GROUP_ID = os.environ.get('TELEGRAM_GROUP_ID')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 PORT = int(os.environ.get('PORT', 8000))
 
-# تخزين البوت والتطبيق كمتغيرات عامة
+# تخزين البوت والتطبيق
 bot = None
 application = None
+processed_messages = set()
 
-def create_keyboard():
-    """إنشاء لوحة الأزرار التفاعلية"""
+class SendPulseMessageParser:
+    """محلل رسائل SendPulse الخاص"""
+    
+    @staticmethod
+    def is_sendpulse_message(text):
+        """التعرف على رسائل SendPulse بناءً على الهيكل"""
+        patterns = [
+            r'العميل\s+[^\n]+\nشفت\s+[^\n]+\n[\s\S]*?الإيمال',
+            r'العميل\s+[^\n]+\n[\s\S]*?Vodafone',
+            r'سعر البيع\s+[\d\.]+\s+المبلغ\s+[\d\.]+\s+جنيه',
+            r'SendPulse Notifications'
+        ]
+        
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
+                return True
+        return False
+    
+    @staticmethod
+    def parse_message(text):
+        """استخراج المعلومات من رسالة SendPulse"""
+        try:
+            data = {
+                'client_name': 'غير معروف',
+                'product': 'غير معروف',
+                'sale_price': 'غير معروف',
+                'amount': 'غير معروف',
+                'payment_method': 'غير معروف',
+                'email_link': 'غير معروف',
+                'payment_id': 'غير معروف',
+                'wallet_info': 'غير معروف'
+            }
+            
+            # استخراج اسم العميل
+            client_match = re.search(r'العميل\s+([^\n]+)', text)
+            if client_match:
+                data['client_name'] = client_match.group(1).strip()
+            
+            # استخراج معلومات المنتج والسعر
+            product_match = re.search(r'شفت\s+([^\n]+)\s+سعر البيع\s+([\d\.]+)\s+المبلغ\s+([\d\.]+)\s+جنيه', text)
+            if product_match:
+                data['product'] = product_match.group(1).strip()
+                data['sale_price'] = product_match.group(2).strip()
+                data['amount'] = product_match.group(3).strip()
+            
+            # استخراج طريقة الدفع
+            payment_match = re.search(r'جنيه\s+([^\n]+)', text)
+            if payment_match:
+                data['payment_method'] = payment_match.match.group(1).strip() if payment_match else 'غير معروف'
+            
+            # استخراج رابط الإيميل
+            email_match = re.search(r'الإيمال[^\n]*\n([^\n]+)', text)
+            if email_match:
+                data['email_link'] = email_match.group(1).strip()
+            
+            # استخراج معلومات المحفظة
+            wallet_match = re.search(r'رقم\s*/\s*اسم المعفظة\s*(\d+)', text)
+            if wallet_match:
+                data['wallet_info'] = wallet_match.group(1).strip()
+            
+            # استخراج معرف الدفع
+            payment_id_match = re.search(r'(\d{9,10})', text)
+            if payment_id_match:
+                data['payment_id'] = payment_id_match.group(1).strip()
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"Error parsing SendPulse message: {e}")
+            return None
+
+def create_order_keyboard(order_id):
+    """إنشاء أزرار خاصة بطلبات SendPulse"""
     keyboard = [
         [
-            InlineKeyboardButton("✅ تم التعامل", callback_data="handled"),
-            InlineKeyboardButton("⏱ مؤجل", callback_data="postponed")
+            InlineKeyboardButton("✅ تأكيد الاستلام", callback_data=f"confirm_{order_id}"),
+            InlineKeyboardButton("📞 تواصل مع العميل", callback_data=f"contact_{order_id}")
         ],
         [
-            InlineKeyboardButton("📞 اتصل بالعميل", callback_data="call_customer"),
-            InlineKeyboardButton("📧 إرسال بريد", callback_data="send_email")
+            InlineKeyboardButton("⚠️ بلاغ مشكلة", callback_data=f"problem_{order_id}"),
+            InlineKeyboardButton("⏱ تأجيل المعالجة", callback_data=f"delay_{order_id}")
         ],
         [
-            InlineKeyboardButton("👀 تحت المراجعة", callback_data="under_review"),
-            InlineKeyboardButton("❌ إلغاء", callback_data="cancelled")
+            InlineKeyboardButton("💰 تأكيد التحويل", callback_data=f"transfer_{order_id}"),
+            InlineKeyboardButton("📋 تفاصيل الطلب", callback_data=f"details_{order_id}")
+        ],
+        [
+            InlineKeyboardButton("🎯 تم الإكمال", callback_data=f"complete_{order_id}"),
+            InlineKeyboardButton("❌ حذف الطلب", callback_data=f"delete_{order_id}")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-async def send_telegram_message(message_text, message_id=None):
-    """إرسال رسالة إلى الجروب مع الأزرار"""
+def format_order_message(parsed_data, original_text, message_id):
+    """تنسيق رسالة الطلب بشكل منظم"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    message = f"""
+🛒 **طلب جديد - SendPulse**
+
+👤 **العميل:** {parsed_data['client_name']}
+📦 **المنتج:** {parsed_data['product']}
+💰 **سعر البيع:** {parsed_data['sale_price']}
+💵 **المبلغ:** {parsed_data['amount']} جنيه
+🏦 **طريقة الدفع:** {parsed_data['payment_method']}
+📧 **الرابط:** {parsed_data['email_link']}
+🔢 **المعرف:** {parsed_data['payment_id']}
+👛 **المحفظة:** {parsed_data['wallet_info']}
+
+---
+🆔 **رقم الرسالة:** {message_id}
+⏰ **الوقت:** {timestamp}
+📡 **المصدر:** SendPulse Bot
+    """.strip()
+    
+    return message
+
+async def handle_group_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة الرسائل في الجروب والتعرف على رسائل SendPulse"""
     try:
-        if not TELEGRAM_GROUP_ID:
-            logger.error("TELEGRAM_GROUP_ID not set")
+        message = update.message
+        
+        # التأكد من أن الرسالة في الجروب المطلوب
+        if str(message.chat.id) != TELEGRAM_GROUP_ID:
             return
         
-        # إضافة معلومات إضافية للرسالة
-        formatted_message = f"📋 طلب جديد\n\n{message_text}\n\n🆔 رقم الطلب: {message_id or 'N/A'}"
+        # تجاهل الرسائل من البوت نفسه
+        if message.from_user and message.from_user.id == bot.id:
+            return
         
+        # تجنب معالجة الرسالة أكثر من مرة
+        if message.message_id in processed_messages:
+            return
+        processed_messages.add(message.message_id)
+        
+        # الحصول على نص الرسالة
+        if not message.text:
+            return
+        
+        text = message.text
+        
+        # التحقق إذا كانت رسالة SendPulse
+        if not SendPulseMessageParser.is_sendpulse_message(text):
+            return
+        
+        logger.info(f"تم التعرف على رسالة SendPulse: {message.message_id}")
+        
+        # تحليل الرسالة
+        parsed_data = SendPulseMessageParser.parse_message(text)
+        
+        if not parsed_data:
+            parsed_data = {
+                'client_name': 'غير معروف',
+                'product': 'غير معروف', 
+                'sale_price': 'غير معروف',
+                'amount': 'غير معروف',
+                'payment_method': 'غير معروف',
+                'email_link': 'غير معروف',
+                'payment_id': 'غير معروف',
+                'wallet_info': 'غير معروف'
+            }
+        
+        # استخدام المعرف الموجود أو إنشاء جديد
+        order_id = parsed_data['payment_id'] if parsed_data['payment_id'] != 'غير معروف' else f"MSG{message.message_id}"
+        
+        # تنسيق الرسالة الجديدة
+        formatted_message = format_order_message(parsed_data, text, message.message_id)
+        
+        # إرسال الرسالة المعدلة مع الأزرار
         await bot.send_message(
             chat_id=TELEGRAM_GROUP_ID,
             text=formatted_message,
-            reply_markup=create_keyboard(),
-            parse_mode='HTML'
+            reply_markup=create_order_keyboard(order_id),
+            parse_mode='Markdown'
         )
-        logger.info("Message sent to Telegram group successfully")
+        
+        logger.info(f"تم إعادة إرسال طلب SendPulse: {order_id}")
         
     except Exception as e:
-        logger.error(f"Error sending message to Telegram: {e}")
+        logger.error(f"خطأ في معالجة رسالة SendPulse: {e}")
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الضغط على الأزرار"""
+async def handle_order_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة إجراءات الطلبات"""
     query = update.callback_query
     await query.answer()
     
     user = query.from_user
-    button_data = query.data
+    callback_data = query.data
     
-    # ردود مختلفة لكل زر
-    responses = {
-        "handled": "✅ تم التعامل مع الطلب",
-        "postponed": "⏱ تم تأجيل الطلب",
-        "call_customer": "📞 سيتم الاتصال بالعميل",
-        "send_email": "📧 سيتم إرسال البريد",
-        "under_review": "👀 الطلب تحت المراجعة",
-        "cancelled": "❌ تم إلغاء الطلب"
+    # استخراج الإجراء والمعرف
+    if '_' in callback_data:
+        action, order_id = callback_data.split('_', 1)
+    else:
+        action = callback_data
+        order_id = "غير معروف"
+    
+    # ردود الإجراءات
+    actions = {
+        "confirm": "✅ تم تأكيد استلام الطلب",
+        "contact": "📞 سيتم التواصل مع العميل",
+        "problem": "⚠️ تم الإبلاغ عن مشكلة في الطلب",
+        "delay": "⏱ تم تأجيل معالجة الطلب",
+        "transfer": "💰 تم تأكيد التحويل المالي",
+        "details": "📋 عرض تفاصيل الطلب الكاملة",
+        "complete": "🎯 تم إكمال الطلب بنجاح",
+        "delete": "❌ تم حذف الطلب"
     }
     
-    response_text = responses.get(button_data, "إجراء غير معروف")
+    response_text = actions.get(action, "إجراء غير معروف")
     
-    # تحديث الرسالة الأصلية لإضافة المعلومات
+    # تحديث الرسالة الأصلية
     original_text = query.message.text
-    new_text = f"{original_text}\n\n---\n🔹 {response_text}\n👤 بواسطة: {user.first_name}"
+    user_action_text = f"\n\n---\n🔹 **الإجراء:** {response_text}\n👤 **المسؤول:** {user.first_name}\n🆔 **رقم الطلب:** {order_id}"
     
-    await query.edit_message_text(
-        text=new_text,
-        reply_markup=None,  # إزالة الأزرار بعد الاختيار
-        parse_mode='HTML'
-    )
+    if action == "delete":
+        new_text = f"❌ **تم حذف الطلب**\n\n👤 المسؤول: {user.first_name}\n🆔 رقم الطلب: {order_id}"
+        await query.edit_message_text(text=new_text, parse_mode='Markdown')
+    elif action == "details":
+        # إظهار تفاصيل إضافية
+        new_text = original_text + f"\n\n📋 **التفاصيل الإضافية:**\n• تم استعراض الطلب بواسطة: {user.first_name}\n• وقت المعالجة: {datetime.now().strftime('%H:%M:%S')}"
+        await query.edit_message_text(text=new_text, parse_mode='Markdown')
+    else:
+        new_text = original_text + user_action_text
+        await query.edit_message_text(
+            text=new_text,
+            reply_markup=None,
+            parse_mode='Markdown'
+        )
     
-    logger.info(f"User {user.id} selected: {button_data}")
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر البدء"""
-    await update.message.reply_text(
-        "مرحباً! أنا بوت إشعارات SendPulse. أنتظر استلام الطلبات..."
-    )
+    logger.info(f"المستخدم {user.id} قام بالإجراء {action} على الطلب {order_id}")
 
 async def setup_bot():
     """إعداد البوت والتطبيق"""
     global bot, application
     
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN not set in environment variables")
+        logger.error("BOT_TOKEN غير مضبوط في متغيرات البيئة")
         return
     
-    # إنشاء تطبيق البوت
-    application = Application.builder().token(BOT_TOKEN).build()
-    bot = application.bot
-    
-    # إضافة handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    
-    # إعداد webhook
-    await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-    logger.info("Webhook set successfully")
-
-@app.route('/webhook', methods=['POST'])
-def telegram_webhook():
-    """Webhook لاستقبال تحديثات تليجرام"""
     try:
-        # معالجة التحديث في thread منفصل
-        thread = Thread(target=asyncio.run, args=(handle_telegram_update(request),))
-        thread.start()
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        logger.error(f"Error in webhook: {e}")
-        return jsonify({"error": str(e)}), 500
-
-async def handle_telegram_update(request):
-    """معالجة تحديث تليجرام"""
-    try:
-        update = Update.de_json(request.get_json(), application.bot)
-        await application.process_update(update)
-    except Exception as e:
-        logger.error(f"Error processing update: {e}")
-
-@app.route('/sendpulse-webhook', methods=['POST'])
-def sendpulse_webhook():
-    """Webhook لاستقبال إشعارات SendPulse"""
-    try:
-        data = request.get_json()
-        logger.info(f"Received SendPulse data: {data}")
+        application = Application.builder().token(BOT_TOKEN).build()
+        bot = application.bot
         
-        if not data:
-            return jsonify({"error": "No data received"}), 400
+        # إضافة handler لمراقبة الرسائل في الجروب
+        application.add_handler(MessageHandler(
+            filters.Chat(chat_id=int(TELEGRAM_GROUP_ID)) & filters.TEXT,
+            handle_group_messages
+        ))
         
-        # استخراج معلومات الطلب من بيانات SendPulse
-        message_text = format_sendpulse_message(data)
-        message_id = data.get('id') or data.get('order_id')
+        # معالج إجراءات الطلبات
+        application.add_handler(CallbackQueryHandler(handle_order_actions))
         
-        # إرسال الرسالة إلى التليجرام
-        asyncio.run(send_telegram_message(message_text, message_id))
-        
-        return jsonify({"status": "Message processed"}), 200
+        logger.info("تم إعداد بوت SendPulse بنجاح")
         
     except Exception as e:
-        logger.error(f"Error processing SendPulse webhook: {e}")
-        return jsonify({"error": str(e)}), 500
-
-def format_sendpulse_message(data):
-    """تنسيق رسالة SendPulse لعرضها بشكل منظم"""
-    try:
-        # تنسيق أساسي - يمكنك تعديله حسب هيكل بيانات SendPulse
-        customer_name = data.get('customer_name', 'غير معروف')
-        customer_email = data.get('customer_email', 'غير معروف')
-        customer_phone = data.get('customer_phone', 'غير معروف')
-        order_details = data.get('order_details', 'لا توجد تفاصيل')
-        order_amount = data.get('amount', 'غير معروف')
-        
-        formatted_message = f"""
-👤 **العميل:** {customer_name}
-📧 **البريد:** {customer_email}
-📞 **الهاتف:** {customer_phone}
-💵 **المبلغ:** {order_amount}
-📋 **تفاصيل الطلب:**
-{order_details}
-        """
-        
-        return formatted_message.strip()
-        
-    except Exception as e:
-        logger.error(f"Error formatting message: {e}")
-        return str(data)
+        logger.error(f"خطأ في إعداد البوت: {e}")
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """فحص صحة التطبيق"""
-    return jsonify({"status": "healthy", "service": "SendPulse Telegram Bot"})
+    return jsonify({
+        "status": "healthy", 
+        "service": "SendPulse Order Manager Bot",
+        "function": "إعادة توجيه طلبات SendPulse مع أزرار تفاعلية"
+    })
 
-@app.route('/test-message', methods=['POST'])
-def test_message():
-    """إرسال رسالة تجريبية"""
+@app.route('/test-parser', methods=['POST'])
+def test_parser():
+    """اختبار محلل رسائل SendPulse"""
     try:
-        test_data = {
-            "customer_name": "عميل تجريبي",
-            "customer_email": "test@example.com",
-            "customer_phone": "+1234567890",
-            "order_details": "هذا طلب تجريبي للاختبار",
-            "amount": "100 ريال"
-        }
+        data = request.get_json()
+        test_text = data.get('text', '')
         
-        message_text = format_sendpulse_message(test_data)
-        asyncio.run(send_telegram_message(message_text, "TEST-001"))
+        is_sendpulse = SendPulseMessageParser.is_sendpulse_message(test_text)
+        parsed_data = SendPulseMessageParser.parse_message(test_text) if is_sendpulse else None
         
-        return jsonify({"status": "Test message sent"}), 200
+        return jsonify({
+            "is_sendpulse_message": is_sendpulse,
+            "parsed_data": parsed_data
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-async def main():
-    """الدالة الرئيسية"""
-    await setup_bot()
-
 def run_bot():
     """تشغيل البوت في thread منفصل"""
-    asyncio.run(main())
+    asyncio.run(setup_bot())
+    if application:
+        application.run_polling()
 
 if __name__ == '__main__':
-    # تشغيل إعداد البوت عند البدء
-    thread = Thread(target=run_bot)
-    thread.start()
+    # تشغيل البوت في thread منفصل
+    bot_thread = Thread(target=run_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
     
-    # تشغيل Flask app
+    # تشغيل تطبيق Flask
     app.run(host='0.0.0.0', port=PORT, debug=False)
