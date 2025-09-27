@@ -1,60 +1,60 @@
 import os
+from flask import Flask, request
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GROUP_ID = int(os.getenv("GROUP_ID"))  # لازم يبقى رقم سالب لو جروب
+# -------------------
+# متغيرات البيئة
+# -------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-# التعامل مع الرسائل الجاية من القناة
-async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.channel_post:
-        text = update.channel_post.text or ""
-        caption = update.channel_post.caption or ""
+if not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("❌ لازم تضيف BOT_TOKEN و CHAT_ID في متغيرات البيئة على Railway")
 
-        if text:
-            await context.bot.send_message(chat_id=GROUP_ID, text=text)
+# -------------------
+# إعداد التليجرام بوت
+# -------------------
+app_telegram = Application.builder().token(BOT_TOKEN).build()
 
-        elif update.channel_post.photo:
-            file_id = update.channel_post.photo[-1].file_id
-            await context.bot.send_photo(chat_id=GROUP_ID, photo=file_id, caption=caption)
+# دي الوظيفة اللي هتكرر أي رسالة جاية من قناة/بوت SendPulse
+async def echo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        text = update.message.text or ""
+        # إرسال نسخة من الرسالة للجروب
+        await context.bot.send_message(chat_id=CHAT_ID, text=f"🔁 {text}")
 
-        elif update.channel_post.video:
-            file_id = update.channel_post.video.file_id
-            await context.bot.send_video(chat_id=GROUP_ID, video=file_id, caption=caption)
+# مسك أي رسالة عادية جاية
+app_telegram.add_handler(MessageHandler(filters.ALL, echo_message))
 
-        print("📩 تم تكرار الرسالة من القناة للجروب")
+# -------------------
+# إعداد Flask
+# -------------------
+app = Flask(__name__)
 
-        # محاولة حذف الرسالة الأصلية من القناة
-        try:
-            await context.bot.delete_message(
-                chat_id=update.channel_post.chat_id,
-                message_id=update.channel_post.message_id
-            )
-            print("🗑️ تم حذف الرسالة الأصلية من القناة")
-        except Exception as e:
-            print("⚠️ لم يتم الحذف:", e)
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, app_telegram.bot)
+    app_telegram.update_queue.put_nowait(update)
+    return "OK", 200
 
-# التعامل مع ضغط الأزرار
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await context.bot.send_message(chat_id=GROUP_ID, text=f"تم الضغط على الزر: {query.data}")
-    print("🖲️ زر مضغوط:", query.data)
+@app.route("/")
+def home():
+    return "🚀 Bot is running on Railway!", 200
 
-def main():
-    app = Application.builder().token(TOKEN).build()
-
-    # الهاندلرز
-    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, channel_post_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
-
-    # تشغيل كـ webhook
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.getenv("PORT", 8080)),
-        url_path="webhook",
-        webhook_url=f"{os.getenv('RAILWAY_URL')}/webhook"
-    )
-
+# -------------------
+# نقطة التشغيل
+# -------------------
 if __name__ == "__main__":
-    main()
+    import asyncio
+
+    port = int(os.environ.get("PORT", 8080))
+    async def run():
+        await app_telegram.initialize()
+        await app_telegram.start()
+        await app_telegram.updater.start_polling()
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(run())
+    app.run(host="0.0.0.0", port=port)
