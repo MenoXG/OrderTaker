@@ -1,9 +1,9 @@
 import os
 from telegram import Update
-from telegram.ext import Application, ChannelPostHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GROUP_ID = int(os.getenv("GROUP_ID"))  # تأكد انه رقم سالب لو جروب
+GROUP_ID = int(os.getenv("GROUP_ID"))  # لازم يبقى رقم سالب لو جروب
 
 # التعامل مع الرسائل الجاية من القناة
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -11,23 +11,20 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         text = update.channel_post.text or ""
         caption = update.channel_post.caption or ""
 
-        # لو الرسالة نص
         if text:
             await context.bot.send_message(chat_id=GROUP_ID, text=text)
 
-        # لو الرسالة صورة ومعاها caption
         elif update.channel_post.photo:
             file_id = update.channel_post.photo[-1].file_id
             await context.bot.send_photo(chat_id=GROUP_ID, photo=file_id, caption=caption)
 
-        # لو رسالة فيديو
         elif update.channel_post.video:
             file_id = update.channel_post.video.file_id
             await context.bot.send_video(chat_id=GROUP_ID, video=file_id, caption=caption)
 
         print("📩 تم تكرار الرسالة من القناة للجروب")
 
-        # محاولة حذف الرسالة الأصلية
+        # محاولة حذف الرسالة الأصلية من القناة
         try:
             await context.bot.delete_message(
                 chat_id=update.channel_post.chat_id,
@@ -48,7 +45,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     # الهاندلرز
-    app.add_handler(ChannelPostHandler(channel_post_handler))
+    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, channel_post_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     # تشغيل كـ webhook
