@@ -1,42 +1,44 @@
+# --- Fix imghdr issue in Python 3.13 ---
+import sys
+import imghdr_pure as imghdr
+sys.modules['imghdr'] = imghdr
+# --------------------------------------
+
 import os
 from flask import Flask, request
 from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-# اقرأ التوكن و ID الجروب من المتغيرات
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GROUP_ID = int(os.environ.get("TELEGRAM_GROUP_ID"))
+# جلب التوكن ومعرف الجروب من متغيرات البيئة
+TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+# إنشاء البوت
 bot = Bot(token=TOKEN)
-
 app = Flask(__name__)
+application = Application.builder().token(TOKEN).build()
 
-# dispatcher عشان نعالج التحديثات
-dispatcher = Dispatcher(bot, None, workers=0)
+# عند استقبال رسالة جديدة
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_message:
+        text = update.effective_message.text or ""
+        # إعادة إرسال نفس الرسالة للجروب
+        await bot.send_message(chat_id=CHAT_ID, text=text)
 
-# دالة start
-def start(update, context):
-    update.message.reply_text("البوت شغال ✅")
+# إضافة الهاندلر للرسائل النصية
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# دالة للرسائل العادية
-def echo(update, context):
-    text = update.message.text
-    bot.send_message(chat_id=GROUP_ID, text=f"رسالة جديدة: {text}")
-
-# إضافة الهاندلرز
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
-
-# Webhook endpoint
+# راوت استقبال webhook من تليجرام
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return "ok"
+    application.update_queue.put_nowait(update)
+    return "ok", 200
 
-# اختبار سريع
-@app.route("/")
+# راوت أساسي للفحص
+@app.route("/", methods=["GET"])
 def index():
-    return "البوت شغال 🚀"
+    return "Bot is running!", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
