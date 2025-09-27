@@ -29,31 +29,38 @@ def create_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة جميع الرسائل في الجروب"""
+    """معالجة جميع الرسائل في الجروب - مع تركيز خاص على رسائل القنوات"""
     try:
         message = update.message
         
-        # إذا لم تكن هناك رسالة
         if not message:
             return
         
-        # تسجيل أساسي للمرسل
-        sender_info = "Unknown"
-        if message.from_user:
-            sender_info = f"{message.from_user.first_name} (User)"
-        elif message.sender_chat:
-            sender_info = f"{message.sender_chat.title} (Channel)"
+        # تسجيل مفصل للمعلومات
+        logger.info("=" * 50)
+        logger.info(f"📨 رسالة مستلمة - ID: {message.message_id}")
+        logger.info(f"💬 نوع المحتوى: {message.content_type if hasattr(message, 'content_type') else 'Unknown'}")
         
-        logger.info(f"📨 رسالة من: {sender_info}")
+        # معلومات المرسل - هذا هو الجزء المهم!
+        if message.from_user:
+            logger.info(f"👤 مرسل عادي: {message.from_user.first_name} (ID: {message.from_user.id})")
+        elif hasattr(message, 'sender_chat') and message.sender_chat:
+            logger.info(f"📡 مرسل قناة: {message.sender_chat.title} (ID: {message.sender_chat.id})")
+            logger.info(f"🔗 نوع القناة: {message.sender_chat.type}")
+        else:
+            logger.info("🔍 مرسل مجهول المصدر")
         
         # الحصول على النص
         message_text = ""
         if message.text:
             message_text = message.text
+            logger.info(f"📝 النص الكامل: {message_text}")
         elif message.caption:
             message_text = message.caption
-        
-        logger.info(f"💬 النص: {message_text[:100]}...")
+            logger.info(f"🏷️ التسمية: {message_text}")
+        else:
+            logger.info("❌ لا يوجد نص أو تسمية")
+            return
         
         # تجاهل الرسائل من البوت نفسه
         bot_user = await context.bot.get_me()
@@ -61,53 +68,99 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.info("🚫 تجاهل رسالة من البوت نفسه")
             return
         
-        # كلمات SendPulse المفتاحية (محدثة بناءً على الصورة)
+        # كلمات SendPulse المفتاحية المحدثة
         sendpulse_keywords = [
             "SendPulse Notifications",
-            "سعر البيع",
+            "سعر البيع", 
             "شفت",
-            "جنيه", 
+            "جنيه",
             "goolnk.com",
             "الرصيد",
             "Vodafone",
             "Instapay",
             "للبحرام",
-            "الحميل",  # كلمة جديدة من الصورة
+            "الحميل",  # من الصورة
             "RedotPay",
             "Binance",
-            "Bybit"   # كلمة جديدة من الصورة
+            "Bybit",   # من الصورة
+            "السبع",   # من الصورة
+            "تحويل من",
+            "رقم/اسم المحفظة"
         ]
         
-        # التحقق من رسالة SendPulse
-        is_sendpulse = False
-        if message_text:
-            for keyword in sendpulse_keywords:
-                if keyword in message_text:
-                    is_sendpulse = True
-                    logger.info(f"✅ وجدت كلمة مفتاحية: {keyword}")
-                    break
+        # البحث عن كلمات SendPulse
+        found_keywords = []
+        for keyword in sendpulse_keywords:
+            if keyword in message_text:
+                found_keywords.append(keyword)
+        
+        if found_keywords:
+            logger.info(f"✅ كلمات SendPulse المكتشفة: {found_keywords}")
+            is_sendpulse = True
+        else:
+            logger.info("🚫 لم يتم العثور على كلمات SendPulse")
+            is_sendpulse = False
+        
+        # إذا كانت الرسالة من قناة، نعتبرها SendPulse تلقائياً (بناءً على الصورة)
+        if hasattr(message, 'sender_chat') and message.sender_chat:
+            logger.info("🎯 رسالة من قناة - نعتبرها SendPulse")
+            is_sendpulse = True
         
         if not is_sendpulse:
             logger.info("🚫 ليست رسالة SendPulse - تم تجاهلها")
             return
         
-        logger.info("🎯 تم التعرف على رسالة SendPulse!")
+        logger.info("🎉 تم التعرف على رسالة SendPulse!")
         
-        # تنسيق بسيط للرسالة
-        formatted_message = f"🛒 **طلب SendPulse**\n\n{message_text}\n\n⚡ **تم التوجيه تلقائياً**"
+        # تنسيق الرسالة بشكل منظم
+        formatted_message = format_sendpulse_message(message_text)
         
-        # إعادة الإرسال مع الأزرار
-        await context.bot.send_message(
+        # إعادة إرسال الرسالة مع الأزرار
+        sent_message = await context.bot.send_message(
             chat_id=TELEGRAM_GROUP_ID,
             text=formatted_message,
             reply_markup=create_keyboard(),
             parse_mode='Markdown'
         )
         
-        logger.info("✅ تم إعادة إرسال رسالة SendPulse بنجاح")
+        logger.info(f"✅ تم إعادة إرسال الرسالة بنجاح - ID الجديد: {sent_message.message_id}")
+        logger.info("=" * 50)
         
     except Exception as e:
         logger.error(f"❌ خطأ في معالجة الرسالة: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+def format_sendpulse_message(text):
+    """تنسيق رسالة SendPulse بشكل منظم"""
+    try:
+        # إذا كان النص قصيراً، نرجعه كما هو
+        if len(text) < 50:
+            return f"🛒 **طلب SendPulse**\n\n{text}\n\n⚡ **تم التوجيه تلقائياً**"
+        
+        # محاولة استخراج المعلومات الرئيسية
+        lines = text.split('\n')
+        important_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if any(keyword in line for keyword in [
+                'SendPulse', 'الحميل', 'العميل', 'سعر البيع', 'شفت', 
+                'جنيه', 'goolnk.com', 'الرصيد', 'Vodafone', 'Instapay',
+                'RedotPay', 'Binance', 'Bybit'
+            ]):
+                important_lines.append(line)
+        
+        if important_lines:
+            formatted_text = "\n".join(important_lines)
+        else:
+            formatted_text = text
+        
+        return f"🛒 **طلب SendPulse**\n\n{formatted_text}\n\n⚡ **تم التوجيه تلقائياً**"
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ في تنسيق الرسالة: {e}")
+        return f"🔔 **طلب SendPulse**\n\n{text}\n\n⚡ **تم التوجيه تلقائياً**"
 
 async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة النقر على الأزرار"""
@@ -129,6 +182,8 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode='Markdown'
         )
         
+        logger.info(f"✅ تم تحديث الرسالة بالإجراء: {action}")
+        
     except Exception as e:
         logger.error(f"❌ خطأ في معالجة الزر: {e}")
 
@@ -140,26 +195,36 @@ def main():
             return
         
         logger.info("🚀 بدء تشغيل البوت...")
+        logger.info(f"📊 إعدادات البوت:")
+        logger.info(f"   - BOT_TOKEN: {'✅ مضبوط' if BOT_TOKEN else '❌ مفقود'}")
+        logger.info(f"   - TELEGRAM_GROUP_ID: {'✅ مضبوط' if TELEGRAM_GROUP_ID else '❌ مفقود'}")
         
         # إنشاء التطبيق
         application = Application.builder().token(BOT_TOKEN).build()
         
-        # إضافة handlers
+        # اختبار اتصال البوت
+        bot_info = await application.bot.get_me()
+        logger.info(f"🤖 البوت: @{bot_info.username} (ID: {bot_info.id})")
+        
+        # إضافة handlers - نراقب جميع أنواع المحتوى
         application.add_handler(MessageHandler(
-            filters.Chat(chat_id=int(TELEGRAM_GROUP_ID)) & filters.TEXT,
+            filters.Chat(chat_id=int(TELEGRAM_GROUP_ID)) & 
+            (filters.TEXT | filters.CAPTION | filters.PHOTO | filters.Document.ALL),
             handle_all_messages
         ))
         
         application.add_handler(CallbackQueryHandler(handle_button_click))
         
-        logger.info("✅ البوت يعمل ويراقب الجروب")
-        logger.info("📡 جاهز لاستقبال رسائل SendPulse...")
+        logger.info("✅ تم إعداد البوت بنجاح")
+        logger.info("📡 البوت يراقب الجروب لرسائل SendPulse من القنوات...")
         
         # بدء التشغيل
         application.run_polling()
         
     except Exception as e:
-        logger.error(f"❌ خطأ: {e}")
+        logger.error(f"❌ خطأ فادح في التشغيل: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 if __name__ == '__main__':
     main()
