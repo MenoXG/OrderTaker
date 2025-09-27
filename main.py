@@ -1,120 +1,67 @@
 import os
 import logging
-from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 import asyncio
-from threading import Thread
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler
 
 # إعداد logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # متغيرات البيئة
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-TELEGRAM_GROUP_ID = os.environ.get('TELEGRAM_GROUP_ID')
+BOT_TOKEN = os.environ['BOT_TOKEN']
+GROUP_ID = os.environ['TELEGRAM_GROUP_ID']
 
-# تخزين البوت
-bot = None
-application = None
+# إنشاء البوت
+bot = Bot(token=BOT_TOKEN)
 
-def create_simple_keyboard():
-    """إنشاء أزرار بسيطة"""
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ تم التعامل", callback_data="handled"),
-            InlineKeyboardButton("⏱ مؤجل", callback_data="postponed")
-        ],
-        [
-            InlineKeyboardButton("📞 اتصل", callback_data="call"),
-            InlineKeyboardButton("🗑 حذف", callback_data="delete")
-        ]
+def make_keyboard():
+    """صنع أزرار بسيطة"""
+    buttons = [
+        [InlineKeyboardButton("✅ تم", callback_data="done")],
+        [InlineKeyboardButton("⏱ لاحقاً", callback_data="later")]
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup(buttons)
 
-async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الرسائل في الجروب"""
+async def resend_message(update, context):
+    """إعادة إرسال الرسالة"""
     try:
-        message = update.message
+        msg = update.message
         
-        # تجاهل الرسائل من البوت نفسه
-        if message.from_user and message.from_user.id == bot.id:
+        # تجاهل رسائل البوت نفسه
+        if msg.from_user.id == (await bot.get_me()).id:
             return
         
-        # الحصول على محتوى الرسالة
-        if message.text:
-            content = message.text
-        elif message.caption:
-            content = message.caption
-        else:
-            content = "📨 رسالة تحتوي على ميديا"
-        
-        # إعادة إرسال الرسالة مع الأزرار
+        # إعادة الإرسال مع الأزرار
         await bot.send_message(
-            chat_id=TELEGRAM_GROUP_ID,
-            text=f"🔔 {content}",
-            reply_markup=create_simple_keyboard()
+            chat_id=GROUP_ID,
+            text=f"🔔 {msg.text}",
+            reply_markup=make_keyboard()
         )
-        
-        logger.info("تم إعادة إرسال الرسالة مع الأزرار")
         
     except Exception as e:
         logger.error(f"خطأ: {e}")
 
-async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة النقر على الأزرار"""
+async def button_click(update, context):
+    """معالجة الضغط على الأزرار"""
     query = update.callback_query
     await query.answer()
-    
-    action = query.data
-    user = query.from_user
-    
-    # تحديث الرسالة
-    original_text = query.message.text
-    new_text = f"{original_text}\n\n✅ تم التعامل بواسطة: {user.first_name}"
-    
     await query.edit_message_text(
-        text=new_text,
+        text=f"{query.message.text}\n\n✅ تم التعامل",
         reply_markup=None
     )
 
-async def setup_bot():
-    """إعداد البوت"""
-    global bot, application
-    
-    application = Application.builder().token(BOT_TOKEN).build()
-    bot = application.bot
-    
-    # إضافة handlers
-    application.add_handler(MessageHandler(
-        filters.Chat(chat_id=int(TELEGRAM_GROUP_ID)) & filters.TEXT,
-        handle_group_message
-    ))
-    application.add_handler(CallbackQueryHandler(handle_button_click))
-    
-    logger.info("البوت يعمل ومراقب الجروب")
-
-def run_bot():
+async def main():
     """تشغيل البوت"""
-    asyncio.run(setup_bot())
-    application.run_polling()
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    # إضافة المعالجات
+    app.add_handler(MessageHandler(filters.Chat(GROUP_ID) & filters.TEXT, resend_message))
+    app.add_handler(CallbackQueryHandler(button_click))
+    
+    # البدء
+    logger.info("بدأ البوت في المراقبة...")
+    await app.run_polling()
 
 if __name__ == '__main__':
-    # التحقق من المتغيرات
-    if not BOT_TOKEN or not TELEGRAM_GROUP_ID:
-        logger.error("يجب ضبط BOT_TOKEN و TELEGRAM_GROUP_ID")
-        exit(1)
-    
-    # تشغيل البوت
-    bot_thread = Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-    
-    # إبقاء البرنامج يعمل
-    try:
-        while True:
-            pass
-    except KeyboardInterrupt:
-        logger.info("إيقاف البوت")
+    asyncio.run(main())
