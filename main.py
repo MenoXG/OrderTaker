@@ -1,76 +1,53 @@
 import os
-from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, ContextTypes, MessageHandler, CallbackQueryHandler, filters
+from telegram import Update
+from telegram.ext import Application, ChannelPostHandler, CallbackQueryHandler, ContextTypes
 
-# ============= إعدادات من متغيرات البيئة =============
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GROUP_ID = int(os.getenv("TELEGRAM_GROUP_ID"))  # الـ group اللي فيه البوت
-SENDPULSE_BOT_ID = int(os.getenv("SENDPULSE_BOT_ID"))  # ID بتاع بوت SendPulse
+GROUP_ID = int(os.getenv("GROUP_ID"))  # تأكد انه رقم سالب لو جروب
 
-PORT = int(os.getenv("PORT", 8080))  # Railway بيبعت PORT أوتوماتيك
+# التعامل مع الرسائل الجاية من القناة
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.channel_post:
+        text = update.channel_post.text or ""
+        caption = update.channel_post.caption or ""
 
-# ============= إعداد التطبيق =============
-app = Flask(__name__)
-application = Application.builder().token(TOKEN).build()
+        # لو الرسالة نص
+        if text:
+            await context.bot.send_message(chat_id=GROUP_ID, text=text)
 
+        # لو الرسالة صورة ومعاها caption
+        elif update.channel_post.photo:
+            file_id = update.channel_post.photo[-1].file_id
+            await context.bot.send_photo(chat_id=GROUP_ID, photo=file_id, caption=caption)
 
-# ============= التعامل مع الرسائل =============
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لما يوصل أي رسالة في الجروب"""
-    if update.message and update.message.from_user.id == SENDPULSE_BOT_ID:
-        text = update.message.text
+        # لو رسالة تانية (مثلاً فيديو)
+        elif update.channel_post.video:
+            file_id = update.channel_post.video.file_id
+            await context.bot.send_video(chat_id=GROUP_ID, video=file_id, caption=caption)
 
-        # أزرار
-        keyboard = [
-            [InlineKeyboardButton("✅ تم التحويل", callback_data="confirm")],
-            [InlineKeyboardButton("❌ إلغاء الطلب", callback_data="cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        print("📩 تم تكرار الرسالة من القناة للجروب")
 
-        # إعادة إرسال الرسالة في نفس الجروب
-        await context.bot.send_message(
-            chat_id=GROUP_ID,
-            text=text,
-            reply_markup=reply_markup
-        )
-
-
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """التعامل مع ضغط الأزرار"""
+# التعامل مع ضغط الأزرار
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    await context.bot.send_message(chat_id=GROUP_ID, text=f"تم الضغط على الزر: {query.data}")
+    print("🖲️ زر مضغوط:", query.data)
 
-    if query.data == "confirm":
-        await query.edit_message_text("✅ تم تأكيد الطلب")
-    elif query.data == "cancel":
-        await query.edit_message_text("❌ تم إلغاء الطلب")
+def main():
+    app = Application.builder().token(TOKEN).build()
 
+    # الهاندلرز
+    app.add_handler(ChannelPostHandler(channel_post_handler))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
-# إضافة الهاندلرز
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-application.add_handler(CallbackQueryHandler(handle_button))
-
-
-# ============= Flask Webhook =============
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    application.update_queue.put_nowait(update)
-    return "ok", 200
-
-
-@app.route("/")
-def home():
-    return "Bot is running!", 200
-
+    # تشغيل كـ webhook
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 8080)),
+        url_path="webhook",
+        webhook_url=f"{os.getenv('RAILWAY_URL')}/webhook"
+    )
 
 if __name__ == "__main__":
-    # تشغيل Flask + البوت
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path="webhook",
-        webhook_url=f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN')}/webhook"
-    )
-    app.run(host="0.0.0.0", port=PORT)
+    main()
