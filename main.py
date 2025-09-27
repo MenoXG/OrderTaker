@@ -3,6 +3,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 import os
 import logging
 import json
+from datetime import datetime
 
 # إعداد logging
 logging.basicConfig(
@@ -40,37 +41,48 @@ def create_order_keyboard(order_id):
     return InlineKeyboardMarkup(keyboard)
 
 def format_sendpulse_message(data):
-    """تنسيق رسالة من بيانات SendPulse"""
+    """تنسيق رسالة من بيانات SendPulse بناءً على المتغيرات المحددة"""
     try:
-        # إذا كانت البيانات تحتوي على النص مباشرة (للتجربة)
-        if isinstance(data, str):
-            return f"🛒 **طلب SendPulse**\n\n{data}\n\n⚡ **تم الاستلام تلقائياً**"
-        
-        # إذا كانت البيانات كـ JSON object
         if isinstance(data, dict):
-            # محاولة استخراج الحقول الشائعة
-            customer_name = data.get('customer_name', data.get('client', data.get('عميل', 'غير معروف')))
-            product = data.get('product', data.get('منتج', data.get('شفت', 'غير معروف')))
-            amount = data.get('amount', data.get('مبلغ', data.get('سعر', 'غير معروف')))
-            payment_method = data.get('payment_method', data.get('طريقة الدفع', 'غير معروف'))
-            order_id = data.get('order_id', data.get('id', data.get('معرف', 'غير معروف')))
+            # استخراج المتغيرات حسب تنسيق SendPulse الذي ذكرته
+            full_name = data.get('full_name', 'غير معروف')
+            username = data.get('username', 'غير معروف')
+            agent = data.get('Agent', 'غير معروف')
+            price = data.get('PriceIN', 'غير معروف')
+            amount_egp = data.get('much2', 'غير معروف')
+            paid_by = data.get('PaidBy', 'غير معروف')
+            insta_control = data.get('InstaControl', 'غير معروف')
+            short_url = data.get('ShortUrl', 'غير معروف')
+            amount_usd = data.get('much', 'غير معروف')
+            platform = data.get('Platform', 'غير معروف')
+            redid = data.get('redid', 'غير معروف')
+            note = data.get('Note', '')
             
+            # بناء الرسالة بنفس تنسيق SendPulse ولكن بشكل منظم
             message = f"""
-🛒 **طلب جديد من SendPulse**
+🛒 **طلب جديد - SendPulse**
 
-👤 **العميل:** {customer_name}
-📦 **المنتج:** {product}
-💵 **المبلغ:** {amount}
-🏦 **طريقة الدفع:** {payment_method}
-🆔 **رقم الطلب:** {order_id}
+👤 **العميل:** {full_name}
+📱 **تليجرام:** @{username}
 
-⚡ **تم الاستلام تلقائياً**
+📊 **تفاصيل الطلب:**
+• شفت {agent} سعر البيع {price}
+• المبلغ {amount_egp} جنيه {paid_by}
+• إنستاباي باسم {insta_control}
+
+🔗 **الرابط:** {short_url}
+💰 **الرصيد:** {amount_usd} $ {platform}
+🆔 **المعرف:** {redid}
+
+{f"💡 **ملاحظة:** {note}" if note else ""}
+
+⏰ **وقت الاستلام:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """.strip()
             
             return message
-        
-        # إذا كانت البيانات بأي شكل آخر
-        return f"🛒 **طلب SendPulse**\n\n{json.dumps(data, ensure_ascii=False, indent=2)}\n\n⚡ **تم الاستلام تلقائياً**"
+        else:
+            # إذا كانت البيانات ليست JSON
+            return f"🛒 **طلب SendPulse**\n\n{str(data)}\n\n⚡ **تم الاستلام تلقائياً**"
         
     except Exception as e:
         logger.error(f"خطأ في تنسيق الرسالة: {e}")
@@ -82,11 +94,20 @@ def home():
     return """
     <h1>🤖 SendPulse Telegram Bot</h1>
     <p>الخادم يعمل بشكل صحيح!</p>
-    <p>Endpoints المتاحة:</p>
+    <p><strong>متغيرات SendPulse المدعومة:</strong></p>
     <ul>
-        <li><code>POST /webhook/sendpulse</code> - لاستقبال إشعارات SendPulse</li>
-        <li><code>GET /health</code> - للتحقق من صحة الخادم</li>
-        <li><code>POST /test</code> - لاختبار إرسال رسالة</li>
+        <li><code>full_name</code> - اسم العميل</li>
+        <li><code>username</code> - اسم المستخدم في تليجرام</li>
+        <li><code>Agent</code> - الوكيل/المنتج</li>
+        <li><code>PriceIN</code> - سعر البيع</li>
+        <li><code>much2</code> - المبلغ بالجنيه</li>
+        <li><code>PaidBy</code> - طريقة الدفع</li>
+        <li><code>InstaControl</code> - اسم إنستاباي</li>
+        <li><code>ShortUrl</code> - الرابط المختصر</li>
+        <li><code>much</code> - الرصيد بالدولار</li>
+        <li><code>Platform</code> - المنصة</li>
+        <li><code>redid</code> - المعرف</li>
+        <li><code>Note</code> - ملاحظة</li>
     </ul>
     """
 
@@ -111,11 +132,19 @@ def sendpulse_webhook():
         
         if content_type == 'application/json':
             data = request.get_json()
-            logger.info(f"📊 بيانات JSON: {json.dumps(data, ensure_ascii=False)[:500]}...")
+            logger.info(f"📊 بيانات JSON مستلمة: {json.dumps(data, ensure_ascii=False)[:500]}...")
         else:
             # إذا كانت البيانات نصاً عادياً
             data = request.get_data(as_text=True)
             logger.info(f"📝 بيانات نصية: {data[:500]}...")
+            
+            # محاولة تحويل النص إلى JSON إذا كان بتنسيق JSON
+            try:
+                if data.strip().startswith('{'):
+                    data = json.loads(data)
+                    logger.info("✅ تم تحويل النص إلى JSON بنجاح")
+            except:
+                pass  # ابقى كـ نص إذا فشل التحويل
         
         if not data:
             logger.warning("⚠️ لا توجد بيانات في الطلب")
@@ -124,12 +153,10 @@ def sendpulse_webhook():
         # تنسيق الرسالة
         message_text = format_sendpulse_message(data)
         
-        # إنشاء معرف للطلب (يمكن تعديله حسب بيانات SendPulse)
+        # إنشاء معرف للطلب
         order_id = "unknown"
-        if isinstance(data, dict) and 'order_id' in data:
-            order_id = data['order_id']
-        elif isinstance(data, dict) and 'id' in data:
-            order_id = data['id']
+        if isinstance(data, dict):
+            order_id = data.get('redid', data.get('id', 'unknown'))
         
         # إرسال الرسالة إلى مجموعة التليجرام
         sent_message = bot.send_message(
@@ -144,7 +171,8 @@ def sendpulse_webhook():
         return jsonify({
             "status": "success",
             "message": "Notification sent to Telegram",
-            "telegram_message_id": sent_message.message_id
+            "telegram_message_id": sent_message.message_id,
+            "order_id": order_id
         }), 200
         
     except Exception as e:
@@ -153,16 +181,22 @@ def sendpulse_webhook():
 
 @app.route('/test', methods=['POST', 'GET'])
 def test_webhook():
-    """لاختبار إرسال رسالة"""
+    """لاختبار إرسال رسالة ببيانات مشابهة لـ SendPulse"""
     try:
-        # بيانات اختبارية
+        # بيانات اختبارية مطابقة لتنسيق SendPulse
         test_data = {
-            "customer_name": "عميل اختباري",
-            "product": "منتج اختباري",
-            "amount": "100 جنيه",
-            "payment_method": "Vodafone",
-            "order_id": "TEST-001",
-            "timestamp": "2024-01-01 12:00:00"
+            "full_name": "أحمد محمد",
+            "username": "ahmed2024",
+            "Agent": "Ayman",
+            "PriceIN": "50.5",
+            "much2": "505",
+            "PaidBy": "Vodafone",
+            "InstaControl": "أحمد محمد",
+            "ShortUrl": "https://goolnk.com/abc123",
+            "much": "10.1",
+            "Platform": "RedotPay",
+            "redid": "123456789",
+            "Note": "طلب عادي"
         }
         
         message_text = format_sendpulse_message(test_data)
@@ -170,7 +204,7 @@ def test_webhook():
         sent_message = bot.send_message(
             chat_id=TELEGRAM_GROUP_ID,
             text=message_text,
-            reply_markup=create_order_keyboard("TEST-001"),
+            reply_markup=create_order_keyboard(test_data['redid']),
             parse_mode='Markdown'
         )
         
@@ -186,33 +220,34 @@ def test_webhook():
         logger.error(f"❌ خطأ في اختبار webhook: {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/webhook/telegram', methods=['POST'])
-def telegram_webhook():
-    """للاستقبال من Telegram إذا أردنا استخدام webhook للبوت"""
+@app.route('/test-raw', methods=['POST'])
+def test_raw_data():
+    """لاختبار بيانات خام كما تأتي من SendPulse"""
     try:
-        update_data = request.get_json()
-        logger.info(f"📱 تحديث من Telegram: {update_data}")
+        # محاكاة البيانات كما تأتي من SendPulse
+        raw_data = {
+            "full_name": "{{full_name}}",
+            "username": "{{username}}", 
+            "Agent": "{{Agent}}",
+            "PriceIN": "{{$PriceIN}}",
+            "much2": "{{much2}}",
+            "PaidBy": "{{PaidBy}}",
+            "InstaControl": "{{InstaControl}}",
+            "ShortUrl": "{{ShortUrl}}",
+            "much": "{{much}}",
+            "Platform": "{{Platform}}",
+            "redid": "{{redid}}",
+            "Note": "{{Note}}"
+        }
         
-        # هنا يمكنك إضافة معالجة للأزرار إذا استخدمنا webhook للبوت
-        if 'callback_query' in update_data:
-            callback_data = update_data['callback_query']['data']
-            message_id = update_data['callback_query']['message']['message_id']
-            user_name = update_data['callback_query']['from'].get('first_name', 'مستخدم')
-            
-            logger.info(f"🔘 زر مضغوط: {callback_data} بواسطة {user_name}")
-            
-            # تحديث الرسالة
-            bot.edit_message_text(
-                chat_id=TELEGRAM_GROUP_ID,
-                message_id=message_id,
-                text=f"الرسالة الأصلية\n\n✅ تم التعامل: {callback_data}\n👤 بواسطة: {user_name}",
-                parse_mode='Markdown'
-            )
-        
-        return jsonify({"status": "ok"}), 200
+        return jsonify({
+            "description": "هذا هو تنسيق البيانات المتوقع من SendPulse",
+            "expected_format": raw_data,
+            "instructions": "عند إعداد webhook في SendPulse، تأكد من إرسال البيانات بهذا التنسيق"
+        }), 200
         
     except Exception as e:
-        logger.error(f"❌ خطأ في webhook Telegram: {e}")
+        logger.error(f"❌ خطأ في اختبار البيانات الخام: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
@@ -226,6 +261,13 @@ if __name__ == '__main__':
         logger.info("🚀 بدء تشغيل خادم SendPulse Webhook...")
         logger.info(f"🌐 الخادم يعمل على المنفذ: {PORT}")
         logger.info("📡 جاهز لاستقبال إشعارات SendPulse...")
+        
+        # اختبار الاتصال بالبوت
+        try:
+            bot_info = bot.get_me()
+            logger.info(f"🤖 البوت: @{bot_info.username} (ID: {bot_info.id})")
+        except Exception as e:
+            logger.error(f"❌ خطأ في الاتصال بالبوت: {e}")
     else:
         logger.error("❌ لا يمكن تشغيل الخادم - متغيرات بيئية مفقودة")
     
