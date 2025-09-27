@@ -1,8 +1,8 @@
 import os
 import logging
-import requests
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 import asyncio
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 
 # إعداد logging
 logging.basicConfig(
@@ -14,106 +14,120 @@ logger = logging.getLogger(__name__)
 # متغيرات البيئة
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TELEGRAM_GROUP_ID = os.environ.get('TELEGRAM_GROUP_ID')
-SENDPULSE_CHANNEL_ID = os.environ.get('SENDPULSE_CHANNEL_ID', '@sendpulse_notifications')  # معرف القناة
 
-class SendPulseMonitor:
-    def __init__(self):
-        self.bot = Bot(token=BOT_TOKEN)
-        self.last_message_id = 0
-        
-    def create_keyboard(self):
-        """إنشاء أزرار تفاعلية"""
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ تم التعامل", callback_data="done"),
-                InlineKeyboardButton("⏱ مؤجل", callback_data="later")
-            ],
-            [
-                InlineKeyboardButton("📞 اتصل بالعميل", callback_data="call"),
-                InlineKeyboardButton("🗑 حذف الطلب", callback_data="delete")
-            ]
+def create_keyboard():
+    """إنشاء أزرار تفاعلية"""
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ تم التعامل", callback_data="done"),
+            InlineKeyboardButton("⏱ مؤجل", callback_data="later")
+        ],
+        [
+            InlineKeyboardButton("📞 اتصل بالعميل", callback_data="call"),
+            InlineKeyboardButton("🗑 حذف الطلب", callback_data="delete")
         ]
-        return InlineKeyboardMarkup(keyboard)
-    
-    async def get_channel_messages(self):
-        """الحصول على رسائل القناة باستخدام الـ API"""
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-            response = requests.get(url)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data['ok']:
-                    return data['result']
-            return []
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في الحصول على الرسائل: {e}")
-            return []
-    
-    def is_sendpulse_message(self, message_text):
-        """التعرف على رسائل SendPulse"""
-        keywords = [
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة جميع الرسائل في الجروب"""
+    try:
+        message = update.message
+        
+        # تجاهل الرسائل من البوت نفسه
+        if message.from_user and message.from_user.id == context.bot.id:
+            return
+        
+        # الحصول على النص
+        message_text = message.text or message.caption or ""
+        
+        logger.info(f"📨 رسالة مستلمة: {message_text[:100]}...")
+        
+        # كلمات SendPulse المفتاحية
+        sendpulse_keywords = [
             "SendPulse Notifications", "سعر البيع", "شفت", "جنيه",
             "goolnk.com", "الرصيد", "Vodafone", "Instapay", "للبحرام",
             "الحميل", "RedotPay", "Binance", "Bybit", "السبع", "تحويل من"
         ]
-        return any(keyword in message_text for keyword in keywords)
-    
-    async def process_messages(self):
-        """معالجة الرسائل الجديدة"""
-        try:
-            updates = await self.get_channel_messages()
-            
-            for update in updates:
-                if 'channel_post' in update:
-                    message = update['channel_post']
-                    message_id = message['message_id']
-                    
-                    # معالجة الرسائل الجديدة فقط
-                    if message_id > self.last_message_id:
-                        self.last_message_id = message_id
-                        
-                        message_text = ""
-                        if 'text' in message:
-                            message_text = message['text']
-                        elif 'caption' in message:
-                            message_text = message['caption']
-                        
-                        if message_text and self.is_sendpulse_message(message_text):
-                            logger.info(f"✅ تم العثور على رسالة SendPulse: {message_id}")
-                            
-                            # إعادة إرسال الرسالة إلى الجروب
-                            formatted_message = f"🛒 **طلب SendPulse**\n\n{message_text}\n\n⚡ **تم التوجيه تلقائياً**"
-                            
-                            await self.bot.send_message(
-                                chat_id=TELEGRAM_GROUP_ID,
-                                text=formatted_message,
-                                reply_markup=self.create_keyboard(),
-                                parse_mode='Markdown'
-                            )
-                            
-                            logger.info(f"✅ تم إعادة إرسال الرسالة إلى الجروب")
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في معالجة الرسائل: {e}")
-    
-    async def run(self):
-        """تشغيل المراقبة"""
-        logger.info("🚀 بدء مراقبة قناة SendPulse...")
         
-        while True:
-            await self.process_messages()
-            await asyncio.sleep(10)  # الانتظار 10 ثواني بين كل فحص
+        # التحقق إذا كانت رسالة SendPulse
+        is_sendpulse = any(keyword in message_text for keyword in sendpulse_keywords)
+        
+        if is_sendpulse:
+            logger.info("✅ تم التعرف على رسالة SendPulse!")
+            
+            # إعادة إرسال الرسالة مع الأزرار
+            formatted_message = f"🛒 **طلب SendPulse**\n\n{message_text}\n\n⚡ **تم التوجيه تلقائياً**"
+            
+            await context.bot.send_message(
+                chat_id=TELEGRAM_GROUP_ID,
+                text=formatted_message,
+                reply_markup=create_keyboard(),
+                parse_mode='Markdown'
+            )
+            
+            logger.info("✅ تم إعادة إرسال الرسالة بنجاح")
+        else:
+            logger.info("🚫 ليست رسالة SendPulse - تم تجاهلها")
+            
+    except Exception as e:
+        logger.error(f"❌ خطأ في معالجة الرسالة: {e}")
 
-async def main():
+async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة النقر على الأزرار"""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        user = query.from_user
+        action = query.data
+        
+        logger.info(f"🔘 زر مضغوط: {action} بواسطة {user.first_name}")
+        
+        # تحديث الرسالة
+        new_text = f"{query.message.text}\n\n---\n✅ تم التعامل: {action}\n👤 بواسطة: {user.first_name}"
+        
+        await query.edit_message_text(
+            text=new_text,
+            reply_markup=None,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ في معالجة الزر: {e}")
+
+def main():
     """الدالة الرئيسية"""
-    if not BOT_TOKEN or not TELEGRAM_GROUP_ID:
-        logger.error("❌ متغيرات بيئية مفقودة")
-        return
-    
-    monitor = SendPulseMonitor()
-    await monitor.run()
+    try:
+        # التحقق من المتغيرات البيئية
+        if not BOT_TOKEN:
+            logger.error("❌ BOT_TOKEN غير مضبوط!")
+            return
+        if not TELEGRAM_GROUP_ID:
+            logger.error("❌ TELEGRAM_GROUP_ID غير مضبوط!")
+            return
+        
+        logger.info("🚀 بدء تشغيل بوت SendPulse...")
+        
+        # إنشاء التطبيق
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # إضافة handlers
+        application.add_handler(MessageHandler(
+            filters.Chat(chat_id=int(TELEGRAM_GROUP_ID)) & filters.TEXT,
+            handle_all_messages
+        ))
+        
+        application.add_handler(CallbackQueryHandler(handle_button_click))
+        
+        logger.info("✅ البوت يعمل ويراقب الجروب")
+        logger.info("📡 جاهز لاستقبال رسائل SendPulse...")
+        
+        # بدء التشغيل
+        application.run_polling()
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ فادح في التشغيل: {e}")
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
