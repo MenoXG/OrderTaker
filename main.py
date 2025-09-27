@@ -35,10 +35,24 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # تسجيل تفصيلي
         logger.info(f"📨 رسالة مستلمة - ID: {message.message_id}")
-        logger.info(f"👤 من: {message.from_user.first_name if message.from_user else 'Channel/Unknown'}")
-        logger.info(f"🆔 ID المرسل: {message.from_user.id if message.from_user else 'No ID'}")
-        logger.info(f"💬 محتوى: {message.text[:100] if message.text else 'No text'}...")
-        logger.info(f"🏷 نوع: {message.content_type}")
+        
+        # معلومات المرسل
+        if message.from_user:
+            sender_info = f"{message.from_user.first_name} (ID: {message.from_user.id})"
+        else:
+            sender_info = "Channel/Bot (No user info)"
+        logger.info(f"👤 من: {sender_info}")
+        
+        # محتوى الرسالة
+        if message.text:
+            message_content = message.text
+            logger.info(f"💬 نص الرسالة: {message_content[:200]}...")
+        elif message.caption:
+            message_content = message.caption
+            logger.info(f"📝 شرح الرسالة: {message_content[:200]}...")
+        else:
+            message_content = ""
+            logger.info("📎 رسالة بدون نص أو شرح")
         
         # تجاهل الرسائل من البوت نفسه
         bot_user = await context.bot.get_me()
@@ -48,12 +62,10 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # تحديد إذا كانت الرسالة من SendPulse Notifications
         is_sendpulse = False
-        message_text = ""
         
-        if message.text:
-            message_text = message.text
+        if message_content:
             # تحقق إذا كانت الرسالة تحتوي على علامات SendPulse
-            if any(keyword in message_text for keyword in [
+            sendpulse_keywords = [
                 "SendPulse Notifications", 
                 "سعر البيع", 
                 "شفت", 
@@ -61,29 +73,24 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "goolnk.com",
                 "الرصيد",
                 "Vodafone",
-                "Instapay"
-            ]):
-                is_sendpulse = True
-                logger.info("✅ تم التعرف على رسالة SendPulse")
+                "Instapay",
+                "للبحرام",
+                "العميل"
+            ]
+            
+            for keyword in sendpulse_keywords:
+                if keyword in message_content:
+                    is_sendpulse = True
+                    logger.info(f"✅ تم التعرف على رسالة SendPulse (كلمة مفتاحية: {keyword})")
+                    break
         
-        elif message.caption:
-            message_text = message.caption
-            if any(keyword in message_text for keyword in [
-                "SendPulse Notifications", 
-                "سعر البيع", 
-                "شفت", 
-                "جنيه"
-            ]):
-                is_sendpulse = True
-                logger.info("✅ تم التعرف على رسالة SendPulse (من caption)")
-        
-        # إذا لم تكن رسالة SendPulse، نتجاهلها أو نتعامل معها بشكل مختلف
+        # إذا لم تكن رسالة SendPulse، نتجاهلها
         if not is_sendpulse:
             logger.info("🚫 ليست رسالة SendPulse - تم تجاهلها")
             return
         
         # تنسيق رسالة SendPulse بشكل منظم
-        formatted_message = format_sendpulse_message(message_text)
+        formatted_message = format_sendpulse_message(message_content)
         
         # إعادة إرسال الرسالة مع الأزرار
         await context.bot.send_message(
@@ -101,6 +108,10 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 def format_sendpulse_message(original_text):
     """تنسيق رسالة SendPulse بشكل منظم"""
     try:
+        # إذا كان النص قصيراً، نرجعه كما هو مع تنسيق بسيط
+        if len(original_text) < 100:
+            return f"🛒 **طلب SendPulse**\n\n{original_text}\n\n⚡ **تم إعادة التوجيه تلقائياً**"
+        
         # تقسيم النص إلى أسطر
         lines = original_text.split('\n')
         
@@ -214,10 +225,10 @@ def main():
         # إنشاء التطبيق
         application = Application.builder().token(BOT_TOKEN).build()
         
-        # إضافة handlers - نراقب جميع أنواع الرسائل
+        # إضافة handlers - نستخدم الفلاتر الصحيحة
+        # filters.TEXT للرسائل النصية، وسنعالج باقي الأنواع في الدالة
         application.add_handler(MessageHandler(
-            filters.Chat(chat_id=int(TELEGRAM_GROUP_ID)) & 
-            (filters.TEXT | filters.CAPTION | filters.PHOTO | filters.DOCUMENT),
+            filters.Chat(chat_id=int(TELEGRAM_GROUP_ID)) & filters.TEXT,
             handle_all_messages
         ))
         
@@ -225,7 +236,7 @@ def main():
         application.add_handler(MessageHandler(filters.Command("start"), start_command))
         
         logger.info("✅ تم إعداد البوت بنجاح")
-        logger.info("👂 البوت يستمع لرسائل SendPulse في الجروب...")
+        logger.info("👂 البوت يستمع لرسائل SendPulse النصية في الجروب...")
         
         # بدء الاستماع
         application.run_polling()
