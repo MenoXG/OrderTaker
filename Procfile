@@ -1,1 +1,2 @@
-web: gunicorn main:app -b 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 30 --access-logfile - --error-logfile -
+web: python -c \"from flask import Flask; app = Flask(__name__); @app.route('/'); def h(): return 'healthy'; app.run(host='0.0.0.0', port=$PORT)\"
+api: python main.py
