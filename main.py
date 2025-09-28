@@ -1,27 +1,27 @@
 import os
 import logging
-from flask import Flask, request, jsonify
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+import requests
+from flask import Flask, request
 
 # إعداد اللوج
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
 # متغيرات البيئة
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROUP_ID = os.getenv("GROUP_ID")  # ID الجروب
-bot = Bot(token=TELEGRAM_TOKEN)
+GROUP_ID = os.getenv("GROUP_ID")  # معرف الجروب أو القناة
+
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 
 @app.route("/sendpulse", methods=["POST"])
 def sendpulse():
     try:
         data = request.json
-        log.info(f"📩 Data received from SendPulse: {data}")
+        logging.info(f"📩 Data received: {data}")
 
-        # البيانات المستلمة
+        # البيانات المستلمة من SendPulse
         name = data.get("name", "غير محدد")
         user_id = data.get("id", "غير محدد")
         amount = data.get("amount", "غير محدد")
@@ -36,32 +36,47 @@ def sendpulse():
             f"💳 طريقة الدفع: {payment}"
         )
 
-        # الأزرار (قابلة للتخصيص لاحقاً)
-        keyboard = [
-            [
-                InlineKeyboardButton("🔄 زر 1", callback_data="btn1"),
-                InlineKeyboardButton("✅ زر 2", callback_data="btn2"),
-            ],
-            [
-                InlineKeyboardButton("❌ زر 3", callback_data="btn3"),
-                InlineKeyboardButton("💳 زر 4", callback_data="btn4"),
-            ],
-            [
-                InlineKeyboardButton("📞 زر 5", callback_data="btn5"),
-                InlineKeyboardButton("📷 زر 6", callback_data="btn6"),
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        # الأزرار (6 أزرار قابلة للتخصيص)
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "🔄 زر 1", "callback_data": "btn1"},
+                    {"text": "✅ زر 2", "callback_data": "btn2"},
+                ],
+                [
+                    {"text": "❌ زر 3", "callback_data": "btn3"},
+                    {"text": "💳 زر 4", "callback_data": "btn4"},
+                ],
+                [
+                    {"text": "📞 زر 5", "callback_data": "btn5"},
+                    {"text": "📷 زر 6", "callback_data": "btn6"},
+                ],
+            ]
+        }
 
-        # إرسال الرسالة للجروب
-        bot.send_message(chat_id=GROUP_ID, text=message, reply_markup=reply_markup)
+        # إرسال عبر API تليجرام
+        response = requests.post(
+            TELEGRAM_API,
+            json={
+                "chat_id": GROUP_ID,
+                "text": message,
+                "reply_markup": keyboard,
+            },
+        )
 
-        return jsonify({"status": "ok"})
+        logging.info(f"✅ Telegram response: {response.text}")
+        return {"status": "ok"}
+
     except Exception as e:
-        log.error(f"❌ Error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        logging.error(f"❌ Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
 
 
 @app.route("/", methods=["GET"])
 def home():
     return "✅ Bot is running on Railway!"
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
