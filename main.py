@@ -1,121 +1,131 @@
 import os
 import logging
-from flask import Flask, request, jsonify
 import requests
-import threading
 import time
+from flask import Flask, request, jsonify
 
 logging.basicConfig(level=logging.INFO)
-
 app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROUP_ID = os.getenv("GROUP_ID")  # لازم يبدأ بـ -100
+GROUP_ID = os.getenv("GROUP_ID")  # يبدأ بـ -100
 APP_URL = os.getenv("APP_URL")
 
-# 📩 قالب الرسالة الأساسي
-message_template = """👤 العميل: {full_name}
-👨‍💼 شفت {Agent} سعـر البيـع {PriceIN}  
-💰 المبلـغ: {much2} جنيه  
-🏦 طريقة الدفع: {PaidBy} 
-🛡️ رقم/اسم المحفظـة: {InstaControl}  
-🧾 الإيصـال: {ShortUrl}  
-💳 الرصيــد: {much} $ {Platform}
- {redid}
- {Note}"""
+SENDPULSE_API_ID = os.getenv("SENDPULSE_API_ID")
+SENDPULSE_API_SECRET = os.getenv("SENDPULSE_API_SECRET")
 
-# 🔹 مفاتيح القالب الأساسية
-template_keys = {
-    "full_name", "username", "Agent", "PriceIN", "much2", "PaidBy",
-    "InstaControl", "ShortUrl", "much", "Platform", "redid", "Note"
-}
+# نخزن التوكن في الذاكرة
+sendpulse_token = {"access_token": None, "expires_at": 0}
 
-# 🔗 تحويل النص لرابط إذا كان URL (مع الإبقاء على النص الأصلي)
-def make_clickable(value):
-    if isinstance(value, str) and (value.startswith("http://") or value.startswith("https://")):
-        return f'<a href="{value}">{value}</a>'
-    return value
+# ======================================================
+# 🔑 Get SendPulse Access Token
+def get_sendpulse_token():
+    global sendpulse_token
+    now = int(time.time())
+    if sendpulse_token["access_token"] and sendpulse_token["expires_at"] > now:
+        return sendpulse_token["access_token"]
 
-# إرسال رسالة لتليجرام
+    url = "https://api.sendpulse.com/oauth/access_token"
+    payload = {
+        "grant_type": "client_credentials",
+        "client_id": SENDPULSE_API_ID,
+        "client_secret": SENDPULSE_API_SECRET
+    }
+    try:
+        res = requests.post(url, data=payload).json()
+        token = res.get("access_token")
+        expires_in = res.get("expires_in", 3600)
+        sendpulse_token["access_token"] = token
+        sendpulse_token["expires_at"] = now + expires_in - 60  # ناقص دقيقة أمان
+        logging.info("✅ Got new SendPulse token")
+        return token
+    except Exception as e:
+        logging.error(f"❌ SendPulse token error: {e}")
+        return None
+
+# ======================================================
+# 📩 Send message to Telegram
 def send_to_telegram(message, buttons=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": GROUP_ID,
         "text": message,
-        "reply_markup": {"inline_keyboard": buttons} if buttons else None,
         "parse_mode": "HTML",
-        "disable_web_page_preview": True
     }
+    if buttons:
+        payload["reply_markup"] = {"inline_keyboard": buttons}
     try:
         res = requests.post(url, json=payload)
         logging.info(f"✅ Telegram response: {res.text}")
+        return res.json()
     except Exception as e:
         logging.error(f"❌ Telegram error: {e}")
 
-# 🔄 Keep Alive
-def keep_alive():
-    if not APP_URL:
+# 🗑️ Delete Telegram message
+def delete_telegram_message(message_id):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage"
+    payload = {"chat_id": GROUP_ID, "message_id": message_id}
+    try:
+        res = requests.post(url, data=payload)
+        logging.info(f"🗑️ Deleted Telegram message {message_id}")
+    except Exception as e:
+        logging.error(f"❌ Delete error: {e}")
+
+# ======================================================
+# 💬 Send message to customer via SendPulse
+def send_to_customer(contact_id, text=None, photo=None, caption=None):
+    token = get_sendpulse_token()
+    if not token:
         return
-    def run():
-        while True:
-            try:
-                requests.get(APP_URL)
-                logging.info("🔄 Keep-alive ping sent")
-            except Exception as e:
-                logging.error(f"Ping error: {e}")
-            time.sleep(300)
-    thread = threading.Thread(target=run)
-    thread.daemon = True
-    thread.start()
 
-keep_alive()
+    url = "https://api.sendpulse.com/chatbots/send"
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "contact_id": contact_id,
+        "message": {}
+    }
+    if photo:
+        payload["message"]["type"] = "photo"
+        payload["message"]["photo"] = photo
+        payload["message"]["caption"] = caption or ""
+    else:
+        payload["message"]["type"] = "text"
+        payload["message"]["text"] = text or ""
 
+    try:
+        res = requests.post(url, json=payload, headers=headers).json()
+        logging.info(f"📩 Sent to customer: {res}")
+    except Exception as e:
+        logging.error(f"❌ Send to customer error: {e}")
+
+# ======================================================
 # 🟢 استقبال بيانات SendPulse
 @app.route("/sendpulse", methods=["POST"])
 def sendpulse():
     try:
-        data = request.json or {}
+        data = request.json
         logging.info(f"📩 Data received: {data}")
 
-        # تجهيز البيانات مع روابط قابلة للضغط
-        filled_data = {k: make_clickable(v) if v else "" for k, v in data.items()}
+        contact_id = data.get("contact_id", "غير محدد")
 
-        # ملء القالب
-        message = message_template.format(
-            full_name=filled_data.get("full_name", "غير محدد"),
-            username=filled_data.get("username", "غير محدد"),
-            Agent=filled_data.get("Agent", "غير محدد"),
-            PriceIN=filled_data.get("PriceIN", "غير محدد"),
-            much2=filled_data.get("much2", "غير محدد"),
-            PaidBy=filled_data.get("PaidBy", "غير محدد"),
-            InstaControl=filled_data.get("InstaControl", "غير محدد"),
-            ShortUrl=filled_data.get("ShortUrl", "غير محدد"),
-            much=filled_data.get("much", "غير محدد"),
-            Platform=filled_data.get("Platform", "غير محدد"),
-            redid=filled_data.get("redid", "غير محدد"),
-            Note=filled_data.get("Note", "")
-        )
+        # بناء رسالة من المتغيرات
+        message = "📩 <b>طلب جديد من SendPulse</b>\n\n"
+        for key, value in data.items():
+            if not value:
+                value = "غير محدد"
+            message += f"🔹 <b>{key}</b>: {value}\n"
 
-        # إضافة أي متغيرات إضافية مش في القالب
-        extra = ""
-        for key, value in filled_data.items():
-            if key not in template_keys:
-                extra += f"\n🔹 <b>{key}</b>: {value}"
-        if extra:
-            message += "\n\n📌 <b>متغيرات إضافية</b>:" + extra
-
-        # الأزرار (ثابتة حالياً)
-        # الأزرار (صفين × 3)
+        # Inline keyboard (صفين × 3 أزرار)
         keyboard = [
             [
-                {"text": "🔄 زر 1", "callback_data": "btn1"},
-                {"text": "✅ زر 2", "callback_data": "btn2"},
-                {"text": "❌ زر 3", "callback_data": "btn3"}
+                {"text": "✅ تنفيذ الطلب", "callback_data": f"approve|{contact_id}"},
+                {"text": "❌ حذف الطلب", "callback_data": f"delete|{contact_id}"},
+                {"text": "🖼️ إرسال صورة", "callback_data": f"photo|{contact_id}"}
             ],
             [
-                {"text": "💳 زر 4", "callback_data": "btn4"},
-                {"text": "📞 زر 5", "callback_data": "btn5"},
-                {"text": "📷 زر 6", "callback_data": "btn6"}
+                {"text": "📞 زر إضافي", "callback_data": f"extra1|{contact_id}"},
+                {"text": "📦 زر إضافي", "callback_data": f"extra2|{contact_id}"},
+                {"text": "ℹ️ زر إضافي", "callback_data": f"extra3|{contact_id}"}
             ]
         ]
 
@@ -126,6 +136,38 @@ def sendpulse():
         logging.error(f"❌ Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# ======================================================
+# 🔘 Handle Telegram button clicks
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    try:
+        data = request.json
+        logging.info(f"🔘 Telegram callback: {data}")
+
+        if "callback_query" in data:
+            cq = data["callback_query"]
+            message_id = cq["message"]["message_id"]
+            action, contact_id = cq["data"].split("|", 1)
+
+            if action == "approve":
+                send_to_customer(contact_id, text="✅ تم تنفيذ طلبك بنجاح")
+                delete_telegram_message(message_id)
+
+            elif action == "delete":
+                delete_telegram_message(message_id)
+
+            elif action == "photo":
+                send_to_customer(contact_id,
+                                 photo="https://www.cdn.com/photo.png",
+                                 caption="🖼️ هذه صورة تجريبية")
+
+        return jsonify({"status": "ok"}), 200
+
+    except Exception as e:
+        logging.error(f"❌ Callback error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# ======================================================
 @app.route("/", methods=["GET"])
 def home():
-    return "✅ Bot is running on Railway!"
+    return "✅ Bot is running with SendPulse integration!"
