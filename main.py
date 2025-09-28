@@ -30,10 +30,10 @@ template_keys = {
     "InstaControl", "ShortUrl", "much", "Platform", "redid", "Note"
 }
 
-# 🔗 تحويل النص لرابط إذا كان URL
+# 🔗 تحويل النص لرابط إذا كان URL (مع الإبقاء على النص الأصلي)
 def make_clickable(value):
     if isinstance(value, str) and (value.startswith("http://") or value.startswith("https://")):
-        return f'<a href="{value}">رابط</a>'
+        return f'<a href="{value}">{value}</a>'
     return value
 
 # إرسال رسالة لتليجرام
