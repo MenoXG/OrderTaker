@@ -13,6 +13,36 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROUP_ID = os.getenv("GROUP_ID")  # لازم يبدأ بـ -100
 APP_URL = os.getenv("APP_URL")
 
+# 📩 قالب الرسالة الأساسي
+message_template = """👤 العميل: <b>{full_name}</b>  
+📱 تليجرام: <b>{username}</b>  
+
+👨‍💼 شفت <b>{Agent}</b> سعـر البيـع <b>{PriceIN}</b>  
+
+💰 المبلـغ: <b>{much2}</b> جنيه  
+🏦 طريقة الدفع: <b>{PaidBy}</b>  
+
+🔑 رقم/اسم المحفظـة: <b>{InstaControl}</b>  
+
+🧾 الإيصـال: {ShortUrl}  
+
+💳 الرصيــد: <b>{much} $ {Platform}</b>  
+
+🆔 <b>{redid}</b>  
+📝 {Note}"""
+
+# 🔹 مفاتيح القالب الأساسية
+template_keys = {
+    "full_name", "username", "Agent", "PriceIN", "much2", "PaidBy",
+    "InstaControl", "ShortUrl", "much", "Platform", "redid", "Note"
+}
+
+# 🔗 تحويل النص لرابط إذا كان URL
+def make_clickable(value):
+    if isinstance(value, str) and (value.startswith("http://") or value.startswith("https://")):
+        return f'<a href="{value}">رابط</a>'
+    return value
+
 # إرسال رسالة لتليجرام
 def send_to_telegram(message, buttons=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -20,7 +50,8 @@ def send_to_telegram(message, buttons=None):
         "chat_id": GROUP_ID,
         "text": message,
         "reply_markup": {"inline_keyboard": buttons} if buttons else None,
-        "parse_mode": "HTML"
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
     }
     try:
         res = requests.post(url, json=payload)
@@ -40,7 +71,6 @@ def keep_alive():
             except Exception as e:
                 logging.error(f"Ping error: {e}")
             time.sleep(300)
-    import threading
     thread = threading.Thread(target=run)
     thread.daemon = True
     thread.start()
@@ -51,15 +81,35 @@ keep_alive()
 @app.route("/sendpulse", methods=["POST"])
 def sendpulse():
     try:
-        data = request.json
+        data = request.json or {}
         logging.info(f"📩 Data received: {data}")
 
-        # بناء رسالة منظمة من كل المتغيرات
-        message = "📩 <b>طلب جديد من SendPulse</b>\n\n"
-        for key, value in data.items():
-            if not value:
-                value = "غير محدد"
-            message += f"🔹 <b>{key}</b>: {value}\n"
+        # تجهيز البيانات مع روابط قابلة للضغط
+        filled_data = {k: make_clickable(v) if v else "غير محدد" for k, v in data.items()}
+
+        # ملء القالب
+        message = message_template.format(
+            full_name=filled_data.get("full_name", "غير محدد"),
+            username=filled_data.get("username", "غير محدد"),
+            Agent=filled_data.get("Agent", "غير محدد"),
+            PriceIN=filled_data.get("PriceIN", "غير محدد"),
+            much2=filled_data.get("much2", "غير محدد"),
+            PaidBy=filled_data.get("PaidBy", "غير محدد"),
+            InstaControl=filled_data.get("InstaControl", "غير محدد"),
+            ShortUrl=filled_data.get("ShortUrl", "غير محدد"),
+            much=filled_data.get("much", "غير محدد"),
+            Platform=filled_data.get("Platform", "غير محدد"),
+            redid=filled_data.get("redid", "غير محدد"),
+            Note=filled_data.get("Note", "")
+        )
+
+        # إضافة أي متغيرات إضافية مش في القالب
+        extra = ""
+        for key, value in filled_data.items():
+            if key not in template_keys:
+                extra += f"\n🔹 <b>{key}</b>: {value}"
+        if extra:
+            message += "\n\n📌 <b>متغيرات إضافية</b>:" + extra
 
         # الأزرار (ثابتة حالياً)
         keyboard = [
