@@ -5,17 +5,15 @@ import requests
 import threading
 import time
 
-# إعداد اللوج
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-# متغيرات البيئة
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROUP_ID = os.getenv("GROUP_ID")  # لازم يبدأ بـ -100
-APP_URL = os.getenv("APP_URL")    # رابط Railway الأساسي
+APP_URL = os.getenv("APP_URL")
 
-# دالة لإرسال رسالة إلى تيليجرام
+# إرسال رسالة لتليجرام
 def send_to_telegram(message, buttons=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -30,7 +28,7 @@ def send_to_telegram(message, buttons=None):
     except Exception as e:
         logging.error(f"❌ Telegram error: {e}")
 
-# 🔄 Keep Alive Ping
+# 🔄 Keep Alive
 def keep_alive():
     if not APP_URL:
         return
@@ -41,36 +39,29 @@ def keep_alive():
                 logging.info("🔄 Keep-alive ping sent")
             except Exception as e:
                 logging.error(f"Ping error: {e}")
-            time.sleep(300)  # كل 5 دقايق
+            time.sleep(300)
+    import threading
     thread = threading.Thread(target=run)
     thread.daemon = True
     thread.start()
 
 keep_alive()
 
-# 🟢 استقبال POST من SendPulse
+# 🟢 استقبال بيانات SendPulse
 @app.route("/sendpulse", methods=["POST"])
 def sendpulse():
     try:
         data = request.json
-        logging.info(f"📩 Data received from SendPulse: {data}")
+        logging.info(f"📩 Data received: {data}")
 
-        # استخراج البيانات
-        name = data.get("name", "غير محدد")
-        user_id = data.get("id", "غير محدد")
-        amount = data.get("amount", "غير محدد")
-        payment = data.get("payment", "غير محدد")
+        # بناء رسالة منظمة من كل المتغيرات
+        message = "📩 <b>طلب جديد من SendPulse</b>\n\n"
+        for key, value in data.items():
+            if not value:
+                value = "غير محدد"
+            message += f"🔹 <b>{key}</b>: {value}\n"
 
-        # الرسالة
-        message = (
-            f"📩 <b>طلب جديد من SendPulse</b>\n\n"
-            f"👤 الاسم: {name}\n"
-            f"🆔 ID: {user_id}\n"
-            f"💵 المبلغ: {amount}\n"
-            f"💳 طريقة الدفع: {payment}"
-        )
-
-        # الأزرار (6 أزرار قابلة للتعديل)
+        # الأزرار (ثابتة حالياً)
         keyboard = [
             [
                 {"text": "🔄 زر 1", "callback_data": "btn1"},
@@ -93,7 +84,6 @@ def sendpulse():
         logging.error(f"❌ Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# 🟢 صفحة رئيسية للتأكد من التشغيل
 @app.route("/", methods=["GET"])
 def home():
     return "✅ Bot is running on Railway!"
