@@ -14,7 +14,7 @@ GROUP_ID = os.getenv("GROUP_ID")  # لازم يبدأ بـ -100
 APP_URL = os.getenv("APP_URL")
 
 # 📩 قالب الرسالة الأساسي
-message_template = """👤 العميل: {full_name} تليجرام: {username}
+message_template = """👤 العميل: {full_name}
 👨‍💼 شفت {Agent} سعـر البيـع {PriceIN}  
 💰 المبلـغ: {much2} جنيه  
 🏦 طريقة الدفع: {PaidBy} 
@@ -105,16 +105,15 @@ def sendpulse():
             message += "\n\n📌 <b>متغيرات إضافية</b>:" + extra
 
         # الأزرار (ثابتة حالياً)
+        # الأزرار (صفين × 3)
         keyboard = [
             [
                 {"text": "🔄 زر 1", "callback_data": "btn1"},
-                {"text": "✅ زر 2", "callback_data": "btn2"}
+                {"text": "✅ زر 2", "callback_data": "btn2"},
+                {"text": "❌ زر 3", "callback_data": "btn3"}
             ],
             [
-                {"text": "❌ زر 3", "callback_data": "btn3"},
-                {"text": "💳 زر 4", "callback_data": "btn4"}
-            ],
-            [
+                {"text": "💳 زر 4", "callback_data": "btn4"},
                 {"text": "📞 زر 5", "callback_data": "btn5"},
                 {"text": "📷 زر 6", "callback_data": "btn6"}
             ]
