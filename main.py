@@ -16,18 +16,12 @@ APP_URL = os.getenv("APP_URL")
 # 📩 قالب الرسالة الأساسي
 message_template = """👤 العميل: <b>{full_name}</b>  
 📱 تليجرام: <b>{username}</b>  
-
 👨‍💼 شفت <b>{Agent}</b> سعـر البيـع <b>{PriceIN}</b>  
-
 💰 المبلـغ: <b>{much2}</b> جنيه  
 🏦 طريقة الدفع: <b>{PaidBy}</b>  
-
 🔑 رقم/اسم المحفظـة: <b>{InstaControl}</b>  
-
 🧾 الإيصـال: {ShortUrl}  
-
 💳 الرصيــد: <b>{much} $ {Platform}</b>  
-
 🆔 <b>{redid}</b>  
 📝 {Note}"""
 
@@ -85,7 +79,7 @@ def sendpulse():
         logging.info(f"📩 Data received: {data}")
 
         # تجهيز البيانات مع روابط قابلة للضغط
-        filled_data = {k: make_clickable(v) if v else "غير محدد" for k, v in data.items()}
+        filled_data = {k: make_clickable(v) if v else "" for k, v in data.items()}
 
         # ملء القالب
         message = message_template.format(
