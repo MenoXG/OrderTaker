@@ -14,8 +14,7 @@ GROUP_ID = os.getenv("GROUP_ID")  # لازم يبدأ بـ -100
 APP_URL = os.getenv("APP_URL")
 
 # 📩 قالب الرسالة الأساسي
-message_template = """👤 العميل: {full_name}  
-📱 تليجرام: {username}
+message_template = """👤 العميل: {full_name} تليجرام: {username}
 👨‍💼 شفت {Agent} سعـر البيـع {PriceIN}  
 💰 المبلـغ: {much2} جنيه  
 🏦 طريقة الدفع: {PaidBy} 
