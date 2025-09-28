@@ -1,5 +1,11 @@
 import os
+import sys
 import logging
+
+# ✅ باتش بديل imghdr لأن Python 3.13 لغتها
+import imghdr_pure as imghdr
+sys.modules['imghdr'] = imghdr
+
 from flask import Flask, request
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
