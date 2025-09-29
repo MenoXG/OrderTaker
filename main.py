@@ -1,175 +1,177 @@
 import os
 import logging
 import requests
+import time
 from flask import Flask, request, jsonify
 
-app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
+app = Flask(__name__)
 
-# ============= Telegram & SendPulse Config =============
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GROUP_ID = os.getenv("GROUP_ID")  # يبدأ بـ -100
+APP_URL = os.getenv("APP_URL")
+
 SENDPULSE_API_ID = os.getenv("SENDPULSE_API_ID")
 SENDPULSE_API_SECRET = os.getenv("SENDPULSE_API_SECRET")
 
-# تخزين الـ access_token في الذاكرة
-SENDPULSE_ACCESS_TOKEN = None
+# نخزن التوكن في الذاكرة
+sendpulse_token = {"access_token": None, "expires_at": 0}
 
-# ========================================================
-
+# ======================================================
+# 🔑 Get SendPulse Access Token
 def get_sendpulse_token():
-    """الحصول على Access Token من SendPulse"""
-    global SENDPULSE_ACCESS_TOKEN
+    global sendpulse_token
+    now = int(time.time())
+    if sendpulse_token["access_token"] and sendpulse_token["expires_at"] > now:
+        return sendpulse_token["access_token"]
+
     url = "https://api.sendpulse.com/oauth/access_token"
-    data = {
+    payload = {
         "grant_type": "client_credentials",
         "client_id": SENDPULSE_API_ID,
         "client_secret": SENDPULSE_API_SECRET
     }
-    r = requests.post(url, data=data)
-    r.raise_for_status()
-    token = r.json()["access_token"]
-    SENDPULSE_ACCESS_TOKEN = token
-    return token
+    try:
+        res = requests.post(url, data=payload).json()
+        token = res.get("access_token")
+        expires_in = res.get("expires_in", 3600)
+        sendpulse_token["access_token"] = token
+        sendpulse_token["expires_at"] = now + expires_in - 60  # ناقص دقيقة أمان
+        logging.info("✅ Got new SendPulse token")
+        return token
+    except Exception as e:
+        logging.error(f"❌ SendPulse token error: {e}")
+        return None
 
-
-def send_to_sendpulse(contact_id, photo_url=None, caption=""):
-    """إرسال رسالة (نص أو صورة) لعميل عبر SendPulse"""
-    global SENDPULSE_ACCESS_TOKEN
-    if not SENDPULSE_ACCESS_TOKEN:
-        get_sendpulse_token()
-
-    url = "https://api.sendpulse.com/telegram/contacts/send"
-    headers = {"Authorization": f"Bearer {SENDPULSE_ACCESS_TOKEN}"}
-
-    if photo_url:
-        payload = {
-            "contact_id": contact_id,
-            "message": {
-                "type": "photo",
-                "photo": photo_url,
-                "caption": caption
-            }
-        }
-    else:
-        payload = {
-            "contact_id": contact_id,
-            "message": {
-                "type": "text",
-                "text": caption
-            }
-        }
-
-    r = requests.post(url, json=payload, headers=headers)
-    if r.status_code == 401:  # Token expired → جدد
-        get_sendpulse_token()
-        headers["Authorization"] = f"Bearer {SENDPULSE_ACCESS_TOKEN}"
-        r = requests.post(url, json=payload, headers=headers)
-    logging.info(f"📤 SendPulse response: {r.text}")
-    return r.json()
-
-
-def send_to_telegram(text, keyboard=None):
-    """إرسال رسالة للجروب على Telegram"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+# ======================================================
+# 📩 Send message to Telegram
+def send_to_telegram(message, buttons=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_GROUP_ID,
-        "text": text,
-        "disable_web_page_preview": True,
+        "chat_id": GROUP_ID,
+        "text": message,
+        "parse_mode": "HTML",
     }
-    if keyboard:
-        payload["reply_markup"] = {"inline_keyboard": keyboard}
-    r = requests.post(url, json=payload)
-    logging.info(f"✅ Telegram response: {r.text}")
-    return r.json()
+    if buttons:
+        payload["reply_markup"] = {"inline_keyboard": buttons}
+    try:
+        res = requests.post(url, json=payload)
+        logging.info(f"✅ Telegram response: {res.text}")
+        return res.json()
+    except Exception as e:
+        logging.error(f"❌ Telegram error: {e}")
 
+# 🗑️ Delete Telegram message
+def delete_telegram_message(message_id):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage"
+    payload = {"chat_id": GROUP_ID, "message_id": message_id}
+    try:
+        res = requests.post(url, data=payload)
+        logging.info(f"🗑️ Deleted Telegram message {message_id}")
+    except Exception as e:
+        logging.error(f"❌ Delete error: {e}")
 
-def delete_message(chat_id, message_id):
-    """حذف رسالة من التليجرام"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
-    payload = {"chat_id": chat_id, "message_id": message_id}
-    r = requests.post(url, json=payload)
-    logging.info(f"🗑️ Telegram delete response: {r.text}")
-    return r.json()
+# ======================================================
+# 💬 Send message to customer via SendPulse (Telegram)
+def send_to_customer(contact_id, text=None, photo=None, caption=None):
+    token = get_sendpulse_token()
+    if not token:
+        return
 
+    headers = {"Authorization": f"Bearer {token}"}
 
-@app.route("/", methods=["POST", "GET"])
-def webhook():
-    """الـ Webhook الأساسي"""
-    if request.method == "POST":
-        data = request.get_json()
-        logging.info(f"📩 Incoming Data: {data}")
+    if photo:  # إرسال صورة
+        url = "https://api.sendpulse.com/telegram/contacts/sendImage"
+        payload = {
+            "contact_id": contact_id,
+            "image": photo,
+            "caption": caption or ""
+        }
+    else:  # إرسال نص
+        url = "https://api.sendpulse.com/telegram/contacts/sendText"
+        payload = {
+            "contact_id": contact_id,
+            "text": text or ""
+        }
 
-        # ------------------- Handling Callback -------------------
-        if "callback_query" in data:
-            callback = data["callback_query"]
-            chat_id = callback["message"]["chat"]["id"]
-            message_id = callback["message"]["message_id"]
-            callback_data = callback["data"]
-            action, contact_id = callback_data.split("|", 1)
+    try:
+        res = requests.post(url, json=payload, headers=headers).json()
+        logging.info(f"📩 Sent to customer: {res}")
+    except Exception as e:
+        logging.error(f"❌ Send to customer error: {e}")
 
-            if action == "done":
-                send_to_sendpulse(contact_id, caption="✅ تم تنفيذ طلبك بنجاح")
-                requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-                    json={"callback_query_id": callback["id"], "text": "تم التنفيذ ✅"}
-                )
+# ======================================================
+# 🟢 استقبال بيانات SendPulse
+@app.route("/sendpulse", methods=["POST"])
+def sendpulse():
+    try:
+        data = request.json
+        logging.info(f"📩 Data received: {data}")
 
-            elif action == "delete":
-                delete_message(chat_id, message_id)
-                requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-                    json={"callback_query_id": callback["id"], "text": "تم الحذف ❌"}
-                )
+        contact_id = data.get("contact_id", "غير محدد")
 
-            elif action == "photo":
-                send_to_sendpulse(contact_id, photo_url="https://www.cdn.com/photo.png", caption="📷 صورة التحويل")
-                requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
-                    json={"callback_query_id": callback["id"], "text": "تم إرسال صورة 📷"}
-                )
+        # بناء رسالة من المتغيرات
+        message = "📩 <b>طلب جديد من SendPulse</b>\n\n"
+        for key, value in data.items():
+            if not value:
+                value = "غير محدد"
+            message += f"🔹 <b>{key}</b>: {value}\n"
 
-            return jsonify({"status": "callback processed"}), 200
-
-        # ------------------- Handling Normal Order -------------------
-        contact_id = data.get("contact_id")
-        name = data.get("full_name", "")
-        username = data.get("username", "")
-        agent = data.get("Agent", "")
-        price_in = data.get("PriceIN", "")
-        amount = data.get("much2", "")
-        paid_by = data.get("PaidBy", "")
-        wallet = data.get("InstaControl", "")
-        short_url = data.get("ShortUrl", "")
-        balance = data.get("much", "")
-        platform = data.get("Platform", "")
-        redid = data.get("redid", "")
-        note = data.get("Note", "")
-
-        # رسالة للتليجرام
-        message = (
-            f"👤 العميل: {name} تليجرام: {username}\n"
-            f"👨‍💼 شفت {agent} سعـر البيـع {price_in}  \n"
-            f"💰 المبلـغ: {amount} جنيه  \n"
-            f"🏦 طريقة الدفع: {paid_by} \n"
-            f"🛡️ رقم/اسم المحفظـة: {wallet}  \n"
-            f"🗾 الإيصـال: {short_url}  \n"
-            f"💳 الرصيــد: {balance} $ {platform}\n {redid}\n {note}"
-        )
-
-        # لوحة الأزرار
-        keyboard = [[
-            {"text": "✅ تم التنفيذ", "callback_data": f"done|{contact_id}"},
-            {"text": "❌ حذف", "callback_data": f"delete|{contact_id}"},
-            {"text": "📷 إرسال صورة", "callback_data": f"photo|{contact_id}"}
-        ]]
+        # Inline keyboard (صفين × 3 أزرار)
+        keyboard = [
+            [
+                {"text": "✅ تنفيذ الطلب", "callback_data": f"approve|{contact_id}"},
+                {"text": "❌ حذف الطلب", "callback_data": f"delete|{contact_id}"},
+                {"text": "🖼️ إرسال صورة", "callback_data": f"photo|{contact_id}"}
+            ],
+            [
+                {"text": "📞 زر إضافي", "callback_data": f"extra1|{contact_id}"},
+                {"text": "📦 زر إضافي", "callback_data": f"extra2|{contact_id}"},
+                {"text": "ℹ️ زر إضافي", "callback_data": f"extra3|{contact_id}"}
+            ]
+        ]
 
         send_to_telegram(message, keyboard)
         return jsonify({"status": "ok"}), 200
 
-    return "Running", 200
+    except Exception as e:
+        logging.error(f"❌ Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
+# ======================================================
+# 🔘 Handle Telegram button clicks
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    try:
+        data = request.json
+        logging.info(f"🔘 Telegram callback: {data}")
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+        if "callback_query" in data:
+            cq = data["callback_query"]
+            message_id = cq["message"]["message_id"]
+            action, contact_id = cq["data"].split("|", 1)
+
+            if action == "approve":
+                send_to_customer(contact_id, text="✅ تم تنفيذ طلبك بنجاح")
+                delete_telegram_message(message_id)
+
+            elif action == "delete":
+                delete_telegram_message(message_id)
+
+            elif action == "photo":
+                send_to_customer(
+                    contact_id,
+                    photo="https://www.cdn.com/photo.png",
+                    caption="🖼️ هذه صورة تجريبية"
+                )
+
+        return jsonify({"status": "ok"}), 200
+
+    except Exception as e:
+        logging.error(f"❌ Callback error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# ======================================================
+@app.route("/", methods=["GET"])
+def home():
+    return "✅ Bot is running with SendPulse integration!"
