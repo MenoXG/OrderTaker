@@ -1,131 +1,121 @@
 import os
-import logging
 import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-# --- متغيرات البيئة ---
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")  # جروب الاستقبال
-SENDPULSE_API_ID = os.environ.get("SENDPULSE_API_ID")
-SENDPULSE_API_SECRET = os.environ.get("SENDPULSE_API_SECRET")
+# متغيرات البيئة (حط القيم الخاصة بيك هنا)
+SENDPULSE_API_ID = os.getenv("SENDPULSE_API_ID")
+SENDPULSE_API_SECRET = os.getenv("SENDPULSE_API_SECRET")
 
-# كاش مؤقت لتوكين SendPulse
-sendpulse_token = {"access_token": None, "expires_in": 0}
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# ==============================
-# دوال مساعدة
-# ==============================
+# كاش بسيط للـ access_token
+sendpulse_token = None
+
 def get_sendpulse_token():
-    """تجديد التوكين الخاص بـ SendPulse"""
     global sendpulse_token
-    if not sendpulse_token["access_token"]:
-        url = "https://api.sendpulse.com/oauth/access_token"
-        payload = {
-            "grant_type": "client_credentials",
-            "client_id": SENDPULSE_API_ID,
-            "client_secret": SENDPULSE_API_SECRET
-        }
-        r = requests.post(url, data=payload)
-        r.raise_for_status()
-        sendpulse_token = r.json()
-        logging.info(f"🔑 New SendPulse token: {sendpulse_token}")
-    return sendpulse_token["access_token"]
+    url = "https://api.sendpulse.com/oauth/access_token"
+    payload = {
+        "grant_type": "client_credentials",
+        "client_id": SENDPULSE_API_ID,
+        "client_secret": SENDPULSE_API_SECRET
+    }
+    r = requests.post(url, data=payload)
+    r.raise_for_status()
+    data = r.json()
+    sendpulse_token = data["access_token"]
+    return sendpulse_token
 
-def send_to_client(contact_id, text):
-    """إرسال رسالة نصية للعميل عبر SendPulse"""
-    url = f"https://api.sendpulse.com/chatbot/v1/messages/send"
-    headers = {"Authorization": f"Bearer {get_sendpulse_token()}"}
+def send_to_client(contact_id, message):
+    global sendpulse_token
+    if not sendpulse_token:
+        sendpulse_token = get_sendpulse_token()
+
+    url = "https://api.sendpulse.com/telegram/contacts/send"
+    headers = {"Authorization": f"Bearer {sendpulse_token}"}
     payload = {
         "contact_id": contact_id,
-        "message": {
-            "type": "text",
-            "text": text
-        }
+        "message": message
     }
-    r = requests.post(url, headers=headers, json=payload)
-    logging.info(f"📤 SendPulse response: {r.text}")
+    r = requests.post(url, json=payload, headers=headers)
+    if r.status_code == 401:  # token expired
+        sendpulse_token = get_sendpulse_token()
+        headers = {"Authorization": f"Bearer {sendpulse_token}"}
+        r = requests.post(url, json=payload, headers=headers)
     return r.json()
 
-def format_order(data):
-    """تجهيز الرسالة للتليجرام"""
-    return (
-        f"👤 العميل: {data.get('full_name','')} تليجرام: {data.get('username','')}\n"
-        f"👨‍💼 شفـت {data.get('Agent','')} سعـر البيـع {data.get('PriceIN','')}\n"
-        f"💰 المبلغ: {data.get('much2','')} جنيـه\n"
-        f"🏦 طريقة الدفع: {data.get('PaidBy','')}\n"
-        f"🛡 رقم/اسم المحفظة: {data.get('InstaControl','')}\n"
-        f"📝 الإيصـال: {data.get('ShortUrl','')}\n"
-        f"💳 الرصيد: {data.get('much','')} $ {data.get('Platform','')}\n"
-        f"{data.get('redid','')}\n"
-        f"{data.get('Note','')}"
-    )
-
-def send_to_telegram(data):
-    """إرسال الرسالة إلى جروب التليجرام مع الأزرار"""
-    text = format_order(data)
-    contact_id = data.get("contact_id")
-
-    keyboard = {
-        "inline_keyboard": [
-            [
-                {"text": "✅ تم التنفيذ", "callback_data": f"done|{contact_id}"},
-                {"text": "❌ حذف", "callback_data": f"delete|{contact_id}"},
-                {"text": "📷 إرسال صورة", "callback_data": f"photo|{contact_id}"}
-            ]
-        ]
-    }
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "disable_web_page_preview": True,
-        "reply_markup": keyboard
-    }
-    r = requests.post(url, json=payload)
-    logging.info(f"✅ Telegram response: {r.text}")
-    return r.json()
-
-# ==============================
-# API Endpoints
-# ==============================
-@app.route("/sendpulse", methods=["POST"])
-def from_sendpulse():
+@app.route(f"/webhook/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
     data = request.json
-    logging.info(f"📩 Data from SendPulse: {data}")
-    send_to_telegram(data)
-    return jsonify({"status": "ok"}), 200
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
 
-@app.route(f"/telegram/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
-def from_telegram():
-    update = request.json
-    logging.info(f"📩 Update from Telegram: {update}")
+        # لو فيه contact_id جاي من الرسالة
+        contact_id = None
+        if "contact_id" in data["message"]:
+            contact_id = data["message"]["contact_id"]
 
-    if "callback_query" in update:
-        callback = update["callback_query"]
-        action, contact_id = callback["data"].split("|")
+        # ارسال رسالة ترحيب مع أزرار
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ تم تنفيذ الطلب", "callback_data": f"done:{contact_id}"},
+                    {"text": "🗑️ حذف الطلب", "callback_data": f"delete:{chat_id}"},
+                    {"text": "📷 إرسال صورة", "callback_data": f"photo:{contact_id}"}
+                ],
+                [
+                    {"text": "📄 زر إضافي 1", "callback_data": "extra1"},
+                    {"text": "📄 زر إضافي 2", "callback_data": "extra2"},
+                    {"text": "📄 زر إضافي 3", "callback_data": "extra3"}
+                ]
+            ]
+        }
 
-        if action == "done":
-            send_to_client(contact_id, "✅ تم تنفيذ طلبك بنجاح.")
-        elif action == "delete":
-            send_to_client(contact_id, "❌ تم إلغاء طلبك.")
-        elif action == "photo":
-            send_to_client(contact_id, "📷 من فضلك أرسل صورة الإيصال.")
+        requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": f"تم استقبال الطلب: {text}",
+            "reply_markup": keyboard
+        })
 
-        # حذف رسالة الطلب من الجروب
-        chat_id = callback["message"]["chat"]["id"]
-        message_id = callback["message"]["message_id"]
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
-        requests.post(url, json={"chat_id": chat_id, "message_id": message_id})
+    elif "callback_query" in data:
+        cq = data["callback_query"]
+        cq_data = cq["data"]
+        chat_id = cq["message"]["chat"]["id"]
+        message_id = cq["message"]["message_id"]
 
-    return jsonify({"status": "ok"}), 200
+        if cq_data.startswith("done:"):
+            contact_id = cq_data.split(":")[1]
+            if contact_id:
+                send_to_client(contact_id, {
+                    "type": "text",
+                    "text": "تم تنفيذ طلبك بنجاح ✅"
+                })
+            # حذف الطلب من الجروب
+            requests.post(f"{TELEGRAM_API_URL}/deleteMessage", json={
+                "chat_id": chat_id,
+                "message_id": message_id
+            })
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot is running ✅"
+        elif cq_data.startswith("delete:"):
+            # حذف الرسالة فقط من الجروب
+            requests.post(f"{TELEGRAM_API_URL}/deleteMessage", json={
+                "chat_id": chat_id,
+                "message_id": message_id
+            })
+
+        elif cq_data.startswith("photo:"):
+            contact_id = cq_data.split(":")[1]
+            if contact_id:
+                send_to_client(contact_id, {
+                    "type": "photo",
+                    "photo": "https://www.cdn.com/photo.png",
+                    "caption": "صورة من المسؤول 📷"
+                })
+
+    return jsonify({"ok": True})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(port=5000, debug=True)
