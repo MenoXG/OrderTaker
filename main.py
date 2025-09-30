@@ -1,104 +1,200 @@
 import os
+import logging
 import requests
-from flask import Flask, request
+import time
+from flask import Flask, request, jsonify
 
+logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# متغيرات البيئة
+# ================== Environment Variables ==================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-SENDPULSE_ID = os.getenv("SENDPULSE_ID")
-SENDPULSE_SECRET = os.getenv("SENDPULSE_SECRET")
-GROUP_ID = int(os.getenv("GROUP_ID"))  # رقم الجروب اللي بيجيله الطلبات
+GROUP_ID = os.getenv("GROUP_ID")  # يبدأ بـ -100
+APP_URL = os.getenv("APP_URL")
 
-waiting_for_photo = {}
+SENDPULSE_API_ID = os.getenv("SENDPULSE_API_ID")
+SENDPULSE_API_SECRET = os.getenv("SENDPULSE_API_SECRET")
 
-# دالة لجلب توكن SendPulse
+# نخزن التوكن في الذاكرة
+sendpulse_token = {"access_token": None, "expires_at": 0}
+waiting_for_photo = {}  # نخزن هنا contact_id اللي مستني صورة
+
+# ======================================================
+# 🔑 Get SendPulse Access Token
 def get_sendpulse_token():
-    url = "https://api.sendpulse.com/oauth/access_token"
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": SENDPULSE_ID,
-        "client_secret": SENDPULSE_SECRET
-    }
-    r = requests.post(url, data=data).json()
-    return r["access_token"]
+    global sendpulse_token
+    now = int(time.time())
+    if sendpulse_token["access_token"] and sendpulse_token["expires_at"] > now:
+        return sendpulse_token["access_token"]
 
-# إرسال صورة أو نص للعميل عبر SendPulse
+    url = "https://api.sendpulse.com/oauth/access_token"
+    payload = {
+        "grant_type": "client_credentials",
+        "client_id": SENDPULSE_API_ID,
+        "client_secret": SENDPULSE_API_SECRET
+    }
+    try:
+        res = requests.post(url, data=payload).json()
+        token = res.get("access_token")
+        expires_in = res.get("expires_in", 3600)
+        sendpulse_token["access_token"] = token
+        sendpulse_token["expires_at"] = now + expires_in - 60  # ناقص دقيقة أمان
+        logging.info("✅ Got new SendPulse token")
+        return token
+    except Exception as e:
+        logging.error(f"❌ SendPulse token error: {e}")
+        return None
+
+# ======================================================
+# 📩 Send message to Telegram
+def send_to_telegram(message, buttons=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": GROUP_ID,
+        "text": message,
+        "parse_mode": "HTML",
+    }
+    if buttons:
+        payload["reply_markup"] = {"inline_keyboard": buttons}
+    try:
+        res = requests.post(url, json=payload)
+        logging.info(f"✅ Telegram response: {res.text}")
+        return res.json()
+    except Exception as e:
+        logging.error(f"❌ Telegram error: {e}")
+
+# 🗑️ Delete Telegram message
+def delete_telegram_message(message_id):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage"
+    payload = {"chat_id": GROUP_ID, "message_id": message_id}
+    try:
+        res = requests.post(url, data=payload)
+        logging.info(f"🗑️ Deleted Telegram message {message_id}")
+    except Exception as e:
+        logging.error(f"❌ Delete error: {e}")
+
+# ======================================================
+# 💬 Send message to customer via SendPulse
 def send_to_customer(contact_id, text=None, photo=None, caption=None):
     token = get_sendpulse_token()
-    url = f"https://api.sendpulse.com/messages/v2/facebook/contacts/{contact_id}"
-
-    if photo:
-        payload = {
-            "type": "image",
-            "image": {
-                "url": photo
-            }
-        }
-        if caption:
-            payload["caption"] = caption
-    else:
-        payload = {
-            "type": "text",
-            "text": text
-        }
+    if not token:
+        return
 
     headers = {"Authorization": f"Bearer {token}"}
-    requests.post(url, json=payload, headers=headers)
 
-# Webhook
-@app.route("/", methods=["POST"])
-def webhook():
-    data = request.json
+    if photo:
+        url = "https://api.sendpulse.com/telegram/contacts/send"
+        payload = {
+            "contact_id": contact_id,
+            "message": {
+                "type": "photo",
+                "photo": photo,
+                "caption": caption or ""
+            }
+        }
+    else:
+        url = "https://api.sendpulse.com/telegram/contacts/sendText"
+        payload = {
+            "contact_id": contact_id,
+            "text": text or ""
+        }
 
-    # 👇 استلام الضغط على زر "إرسال صورة"
-    if "callback_query" in data:
-        callback = data["callback_query"]
-        if callback["data"].startswith("send_image:"):
-            contact_id = callback["data"].split(":")[1]
-            chat_id = callback["message"]["chat"]["id"]
+    try:
+        res = requests.post(url, json=payload, headers=headers).json()
+        logging.info(f"📩 Sent to customer: {res}")
+    except Exception as e:
+        logging.error(f"❌ Send to customer error: {e}")
 
-            waiting_for_photo[GROUP_ID] = contact_id
+# ======================================================
+# 🟢 استقبال بيانات SendPulse
+@app.route("/sendpulse", methods=["POST"])
+def sendpulse():
+    try:
+        data = request.json
+        logging.info(f"📩 Data received: {data}")
 
-            requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": "📷 من فضلك أرسل صورة الآن"}
-            )
+        contact_id = data.get("contact_id", "غير محدد")
 
-    # 👇 استلام صورة من الجروب
-    elif "message" in data and "photo" in data["message"]:
-        contact_id = waiting_for_photo.get(GROUP_ID)
-        if contact_id:
-            file_id = data["message"]["photo"][-1]["file_id"]
+        # بناء رسالة من المتغيرات
+        message = "📩 <b>طلب جديد من SendPulse</b>\n\n"
+        for key, value in data.items():
+            if not value:
+                value = "غير محدد"
+            message += f"🔹 <b>{key}</b>: {value}\n"
 
-            # استدعاء getFile للحصول على رابط مباشر
-            file_info = requests.get(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile",
-                params={"file_id": file_id}
-            ).json()
+        # Inline keyboard
+        keyboard = [
+            [
+                {"text": "✅ تنفيذ الطلب", "callback_data": f"approve|{contact_id}"},
+                {"text": "❌ حذف الطلب", "callback_data": f"delete|{contact_id}"},
+                {"text": "🖼️ إرسال صورة", "callback_data": f"photo|{contact_id}"}
+            ]
+        ]
 
-            file_path = file_info["result"]["file_path"]
-            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+        send_to_telegram(message, keyboard)
+        return jsonify({"status": "ok"}), 200
 
-            # إرسال الصورة للعميل
-            send_to_customer(
-                contact_id,
-                photo=file_url,
-                caption="✅ تم تنفيذ طلبك بنجاح"
-            )
+    except Exception as e:
+        logging.error(f"❌ Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-            # مسح الحالة
-            waiting_for_photo.pop(GROUP_ID, None)
+# ======================================================
+# 🔘 Handle Telegram button clicks
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    try:
+        data = request.json
+        logging.info(f"🔘 Telegram callback: {data}")
 
-            # حذف صورة الجروب تلقائياً بعد الإرسال
-            chat_id = data["message"]["chat"]["id"]
-            message_id = data["message"]["message_id"]
-            requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
-                json={"chat_id": chat_id, "message_id": message_id}
-            )
+        # لو ضغط زر
+        if "callback_query" in data:
+            cq = data["callback_query"]
+            message_id = cq["message"]["message_id"]
+            action, contact_id = cq["data"].split("|", 1)
 
-    return "ok"
+            if action == "approve":
+                send_to_customer(contact_id, text="✅ تم تنفيذ طلبك بنجاح")
+                delete_telegram_message(message_id)
 
+            elif action == "delete":
+                delete_telegram_message(message_id)
+
+            elif action == "photo":
+                waiting_for_photo[GROUP_ID] = contact_id
+                send_to_telegram("📸 من فضلك أرسل صورة الآن")
+
+        # لو جالي رسالة فيها صورة
+        elif "message" in data and "photo" in data["message"]:
+            contact_id = waiting_for_photo.get(GROUP_ID)
+            if contact_id:
+                file_id = data["message"]["photo"][-1]["file_id"]
+
+                # لازم نجيب رابط الملف من Telegram
+                get_file_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}"
+                file_info = requests.get(get_file_url).json()
+                file_path = file_info["result"]["file_path"]
+                file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+
+                send_to_customer(
+                    contact_id,
+                    photo=file_url,
+                    caption="✅ تم تنفيذ طلبك بنجاح"
+                )
+
+                waiting_for_photo.pop(GROUP_ID, None)
+
+        return jsonify({"status": "ok"}), 200
+
+    except Exception as e:
+        logging.error(f"❌ Callback error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# ======================================================
+@app.route("/", methods=["GET"])
+def home():
+    return "✅ Bot is running with SendPulse integration!"
+
+# ======================================================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    port = int(os.getenv("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
