@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from flask import Flask, request, jsonify
 
@@ -7,6 +8,7 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SENDPULSE_API_ID = os.getenv("SENDPULSE_API_ID")
 SENDPULSE_API_SECRET = os.getenv("SENDPULSE_API_SECRET")
+GROUP_ID = os.getenv("GROUP_ID")  # 👈 معرف الجروب اللي بتوصلك فيه الطلبات
 
 # نخزن أحدث contact_id مستلم
 last_contact_id = None
@@ -37,9 +39,9 @@ def get_file_url(file_id):
     return f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
 
 
-def delete_message(chat_id, message_id):
+def delete_message(message_id):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
-    payload = {"chat_id": chat_id, "message_id": message_id}
+    payload = {"chat_id": GROUP_ID, "message_id": message_id}
     return requests.post(url, json=payload).json()
 
 
@@ -50,13 +52,12 @@ def webhook():
 
     if "message" in data:
         message = data["message"]
-        chat_id = message["chat"]["id"]
         message_id = message["message_id"]
 
         # لو استلمنا رسالة JSON من SendPulse (فيها contact_id)
         if "text" in message:
             try:
-                payload = eval(message["text"])  # لو واصلة كـ string JSON
+                payload = json.loads(message["text"])  # 👈 استخدم json.loads بدل eval
                 if "contact_id" in payload:
                     last_contact_id = payload["contact_id"]
             except Exception:
@@ -71,7 +72,7 @@ def webhook():
             send_text_to_client(last_contact_id, f"📷 الصورة المرفقة:\n{file_url}", token)
 
             # امسح رسالة الصورة من الجروب
-            delete_message(chat_id, message_id)
+            delete_message(message_id)
 
     return jsonify({"status": "ok"})
 
