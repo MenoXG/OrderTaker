@@ -4,158 +4,87 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# ==============================
-#  متغيرات البيئة
-# ==============================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GROUP_ID = os.getenv("GROUP_ID")  # جروب الأدمنز
+# جلب المتغيرات من البيئة
 SENDPULSE_API_ID = os.getenv("SENDPULSE_API_ID")
 SENDPULSE_API_SECRET = os.getenv("SENDPULSE_API_SECRET")
+GROUP_ID = os.getenv("GROUP_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# ==============================
-#  دوال مساعدة
-# ==============================
-
+# دالة للحصول على Access Token من SendPulse
 def get_sendpulse_token():
-    """الحصول على Access Token جديد من SendPulse (مدته ساعة)"""
+    if not SENDPULSE_API_ID or not SENDPULSE_API_SECRET:
+        raise ValueError("❌ SENDPULSE_API_ID or SENDPULSE_API_SECRET not set in Railway variables")
+
     url = "https://api.sendpulse.com/oauth/access_token"
     data = {
         "grant_type": "client_credentials",
         "client_id": SENDPULSE_API_ID,
         "client_secret": SENDPULSE_API_SECRET
     }
-    r = requests.post(url, data=data)
-    r.raise_for_status()
-    return r.json()["access_token"]
+    resp = requests.post(url, data=data)
+    resp.raise_for_status()
+    return resp.json()["access_token"]
 
+# 🔹 Route اختبار للتأكد أن السيرفر شغال
+@app.route("/")
+def index():
+    return "✅ Flask is running on Railway!", 200
 
-def send_text_to_client(contact_id, text):
-    """إرسال رسالة نصية للعميل عبر SendPulse"""
-    token = get_sendpulse_token()
-    url = "https://api.sendpulse.com/telegram/contacts/sendText"
-    headers = {"Authorization": f"Bearer {token}"}
-    payload = {
-        "contact_id": contact_id,
-        "text": text
-    }
-    r = requests.post(url, headers=headers, json=payload)
-    r.raise_for_status()
-    return r.json()
-
-
-def delete_message(chat_id, message_id):
-    """مسح رسالة من التليجرام"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
-    payload = {"chat_id": chat_id, "message_id": message_id}
-    return requests.post(url, data=payload).json()
-
-
-def send_message(chat_id, text, reply_markup=None):
-    """إرسال رسالة لتليجرام"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    return requests.post(url, json=payload).json()
-
-
-def get_file_url(file_id):
-    """جلب رابط الصورة من تليجرام"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
-    r = requests.get(url).json()
-    if "result" in r:
-        file_path = r["result"]["file_path"]
-        return f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
-    return None
-
-
-# ==============================
-#  Webhook للتليجرام
-# ==============================
-
+# 🔹 استقبال رسائل تليجرام
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    update = request.get_json()
+    try:
+        data = request.json
+        print("📩 Received:", data)
 
-    # لو رسالة جاية من الجروب
-    if "message" in update:
-        message = update["message"]
-        chat_id = message["chat"]["id"]
-        message_id = message["message_id"]
+        # لو الرسالة من الجروب
+        if "message" in data:
+            chat_id = data["message"]["chat"]["id"]
+            message_id = data["message"]["message_id"]
 
-        if str(chat_id) == str(GROUP_ID):
-            # لو صورة
-            if "photo" in message:
-                file_id = message["photo"][-1]["file_id"]
-                file_url = get_file_url(file_id)
-                caption = message.get("caption", "")
+            # استقبال صورة من المسؤول
+            if "photo" in data["message"]:
+                file_id = data["message"]["photo"][-1]["file_id"]
 
-                reply_markup = {
-                    "inline_keyboard": [
-                        [{"text": "📤 تنفيذ الطلب", "callback_data": f"execute_{message_id}"}]
-                    ]
+                # تحميل رابط الصورة من تليجرام
+                file_info = requests.get(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
+                ).json()
+
+                file_path = file_info["result"]["file_path"]
+                file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+
+                # contact_id لازم يوصلك من SendPulse مع الرسالة
+                contact_id = data["message"].get("contact_id")
+                if not contact_id:
+                    print("⚠️ contact_id مش موجود")
+                    return jsonify({"status": "no_contact_id"}), 200
+
+                # إرسال رابط الصورة للعميل عبر SendPulse
+                token = get_sendpulse_token()
+                headers = {"Authorization": f"Bearer {token}"}
+                payload = {
+                    "contact_id": contact_id,
+                    "message": {
+                        "type": "text",
+                        "text": f"📸 تم تنفيذ طلبك بنجاح \n{file_url}"
+                    }
                 }
-                send_message(chat_id, f"📸 صورة مرفقة\n{caption}", reply_markup)
+                resp = requests.post("https://api.sendpulse.com/telegram/contacts/sendText",
+                                     json=payload, headers=headers)
+                print("📤 SendPulse response:", resp.text)
 
-                # نخزن لينك الصورة في الرسالة نفسها علشان لما ننفذ نبعته للعميل
-                message["file_url"] = file_url
+                # حذف الصورة من الجروب بعد الإرسال
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                    json={"chat_id": chat_id, "message_id": message_id}
+                )
 
-            # لو نص
-            elif "text" in message:
-                text = message["text"]
-                reply_markup = {
-                    "inline_keyboard": [
-                        [{"text": "📤 تنفيذ الطلب", "callback_data": f"execute_{message_id}"}]
-                    ]
-                }
-                send_message(chat_id, f"📩 طلب جديد:\n\n{text}", reply_markup)
+        return jsonify({"status": "ok"}), 200
 
-    # لو ضغط زر
-    elif "callback_query" in update:
-        cq = update["callback_query"]
-        data = cq["data"]
-        from_chat = cq["message"]["chat"]["id"]
-        message_id = cq["message"]["message_id"]
-
-        if data.startswith("execute_"):
-            original_message_id = data.split("_")[1]
-
-            # هنا نجيب بيانات العميل من النص (JSON)
-            try:
-                payload = cq["message"]["text"]
-                if "contact_id" in payload:
-                    contact_id = payload.split('"contact_id":"')[1].split('"')[0]
-                else:
-                    contact_id = None
-            except Exception:
-                contact_id = None
-
-            if contact_id:
-                # لو فيه صورة
-                if "file_url" in cq["message"]:
-                    file_url = cq["message"]["file_url"]
-                    send_text_to_client(contact_id, f"✅ تم تنفيذ طلبك\nرابط الصورة: {file_url}")
-                else:
-                    send_text_to_client(contact_id, "✅ تم تنفيذ طلبك بنجاح")
-
-                send_message(from_chat, "✅ تم إرسال رسالة للعميل")
-
-            else:
-                send_message(from_chat, "⚠️ لم يتم العثور على contact_id")
-
-            # نحذف الرسائل
-            delete_message(from_chat, original_message_id)
-            delete_message(from_chat, message_id)
-
-    return jsonify({"status": "ok"})
-
-
-# ==============================
-#  Health check
-# ==============================
-@app.route("/", methods=["GET"])
-def index():
-    return "Bot is running", 200
+    except Exception as e:
+        print("❌ Error:", str(e))
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 if __name__ == "__main__":
