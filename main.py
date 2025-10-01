@@ -5,6 +5,7 @@ import logging
 import time
 import tempfile
 import shutil
+import threading
 
 # إعداد logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -12,11 +13,50 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# ذاكرة مؤقتة (chat_id → {contact_id, channel})
+# ذاكرة مؤقتة (chat_id → {contact_id, channel, request_message_id})
 pending_photos = {}
 
 # =============================
-# 1. دالة للحصول على Access Token من SendPulse
+# 1. دالة مسح الرسائل من التليجرام
+# =============================
+def delete_telegram_message(chat_id, message_id):
+    try:
+        token = os.getenv("TELEGRAM_TOKEN")
+        if not token:
+            logger.error("TELEGRAM_TOKEN not set")
+            return False
+            
+        url = f"https://api.telegram.org/bot{token}/deleteMessage"
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id
+        }
+        response = requests.post(url, json=payload, timeout=30)
+        
+        if response.status_code == 200:
+            logger.info(f"Message {message_id} deleted successfully from chat {chat_id}")
+            return True
+        else:
+            logger.error(f"Failed to delete message {message_id}: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error deleting message: {e}")
+        return False
+
+# =============================
+# 2. دالة مسح رسالة بعد تأخير
+# =============================
+def delete_message_after_delay(chat_id, message_id, delay_seconds):
+    def delete():
+        time.sleep(delay_seconds)
+        delete_telegram_message(chat_id, message_id)
+    
+    thread = threading.Thread(target=delete)
+    thread.daemon = True
+    thread.start()
+
+# =============================
+# 3. دالة للحصول على Access Token من SendPulse
 # =============================
 def get_sendpulse_token():
     try:
@@ -37,7 +77,7 @@ def get_sendpulse_token():
         return None
 
 # =============================
-# 2. إرسال رسالة للعميل عبر SendPulse (Telegram)
+# 4. إرسال رسالة للعميل عبر SendPulse (Telegram)
 # =============================
 def send_to_client_telegram(contact_id, text):
     try:
@@ -62,7 +102,7 @@ def send_to_client_telegram(contact_id, text):
         return False
 
 # =============================
-# 3. إرسال رسالة للعميل عبر SendPulse (Messenger)
+# 5. إرسال رسالة للعميل عبر SendPulse (Messenger)
 # =============================
 def send_to_client_messenger(contact_id, text):
     try:
@@ -92,7 +132,7 @@ def send_to_client_messenger(contact_id, text):
         return False
 
 # =============================
-# 4. دالة موحدة لإرسال الرسائل بناءً على القناة
+# 6. دالة موحدة لإرسال الرسائل بناءً على القناة
 # =============================
 def send_to_client(contact_id, text, channel):
     if channel == "telegram":
@@ -104,7 +144,7 @@ def send_to_client(contact_id, text, channel):
         return False
 
 # =============================
-# 5. تحميل الصورة من Telegram وإنشاء رابط مؤقت
+# 7. تحميل الصورة من Telegram وإنشاء رابط مؤقت
 # =============================
 def download_and_create_temp_url(telegram_file_url, telegram_token, contact_id):
     try:
@@ -168,7 +208,7 @@ def download_and_create_temp_url(telegram_file_url, telegram_token, contact_id):
         return None
 
 # =============================
-# 6. إرسال صورة للعميل عبر SendPulse API (Telegram)
+# 8. إرسال صورة للعميل عبر SendPulse API (Telegram)
 # =============================
 def send_photo_to_client_telegram(contact_id, photo_url):
     try:
@@ -209,7 +249,7 @@ def send_photo_to_client_telegram(contact_id, photo_url):
         return False
 
 # =============================
-# 7. إرسال صورة للعميل عبر SendPulse API (Messenger)
+# 9. إرسال صورة للعميل عبر SendPulse API (Messenger)
 # =============================
 def send_photo_to_client_messenger(contact_id, photo_url):
     try:
@@ -251,7 +291,7 @@ def send_photo_to_client_messenger(contact_id, photo_url):
         return False
 
 # =============================
-# 8. دالة موحدة لإرسال الصور بناءً على القناة
+# 10. دالة موحدة لإرسال الصور بناءً على القناة
 # =============================
 def send_photo_to_client(contact_id, photo_url, channel):
     if channel == "telegram":
@@ -263,7 +303,7 @@ def send_photo_to_client(contact_id, photo_url, channel):
         return False
 
 # =============================
-# 9. إرسال رسالة إلى جروب تليجرام مع أزرار
+# 11. إرسال رسالة إلى جروب تليجرام مع أزرار
 # =============================
 def send_to_telegram(message, contact_id, channel):
     try:
@@ -314,7 +354,7 @@ def send_to_telegram(message, contact_id, channel):
         return False
 
 # =============================
-# 10. استقبال Webhook من SendPulse
+# 12. استقبال Webhook من SendPulse
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -373,7 +413,7 @@ def webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 11. استقبال ضغط الأزرار + الصور من التليجرام
+# 13. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
@@ -422,9 +462,11 @@ def telegram_webhook():
                 new_text = f"❌ تم إلغاء الطلب.\nContact ID: {contact_id}\nChannel: {channel}"
                 
             elif action == "sendpic":
+                # حفظ معرف الرسالة الحالية (التي تحتوي على طلب رفع الصورة)
                 pending_photos[str(chat_id)] = {
                     'contact_id': contact_id,
-                    'channel': channel
+                    'channel': channel,
+                    'request_message_id': message_id  # حفظ معرف الرسالة التي تطلب الصورة
                 }
                 new_text = f"📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل.\nContact ID: {contact_id}\nChannel: {channel}"
                 
@@ -448,7 +490,7 @@ def telegram_webhook():
         elif "message" in data and "photo" in data["message"]:
             message_data = data["message"]
             chat_id = message_data["chat"]["id"]
-            message_id = message_data["message_id"]
+            message_id = message_data["message_id"]  # معرف رسالة الصورة المرسلة
 
             logger.info(f"Photo received in chat {chat_id}")
 
@@ -456,6 +498,7 @@ def telegram_webhook():
                 pending_data = pending_photos.pop(str(chat_id))
                 contact_id = pending_data['contact_id']
                 channel = pending_data['channel']
+                request_message_id = pending_data.get('request_message_id')  # معرف رسالة طلب الصورة
 
                 # نأخذ أعلى دقة للصورة (آخر عنصر في المصفوفة)
                 photo = message_data["photo"][-1]
@@ -484,16 +527,32 @@ def telegram_webhook():
                             success = send_photo_to_client(contact_id, temp_photo_url, channel)
                             
                             if success:
-                                # 3. إرسال رسالة تأكيد في الجروب
-                                requests.post(
+                                # 3. مسح الرسائل المطلوبة فور نجاح الإرسال
+                                
+                                # مسح رسالة طلب الصورة (إذا كانت موجودة)
+                                if request_message_id:
+                                    delete_telegram_message(chat_id, request_message_id)
+                                
+                                # مسح الصورة المرسلة في الجروب
+                                delete_telegram_message(chat_id, message_id)
+                                
+                                # 4. إرسال رسالة تأكيد في الجروب
+                                confirmation_response = requests.post(
                                     f"https://api.telegram.org/bot{token}/sendMessage",
                                     json={
                                         "chat_id": chat_id,
-                                        "text": f"✅ تم إرسال الصورة للعميل (Contact ID: {contact_id}, Channel: {channel})",
-                                        "reply_to_message_id": message_id
+                                        "text": f"✅ تم إرسال الصورة للعميل (Contact ID: {contact_id}, Channel: {channel})"
                                     },
                                     timeout=30
                                 )
+                                
+                                if confirmation_response.status_code == 200:
+                                    confirmation_data = confirmation_response.json()
+                                    confirmation_message_id = confirmation_data['result']['message_id']
+                                    
+                                    # مسح رسالة التأكيد بعد 5 ثواني
+                                    delete_message_after_delay(chat_id, confirmation_message_id, 5)
+                                
                                 logger.info(f"Photo sent successfully to client {contact_id} on channel {channel}")
                             else:
                                 logger.error(f"Failed to send photo to client {contact_id} on channel {channel}")
@@ -511,7 +570,7 @@ def telegram_webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 12. صفحات التحقق
+# 14. صفحات التحقق
 # =============================
 @app.route("/")
 def home():
@@ -526,7 +585,7 @@ def health():
     return {"status": "healthy", "timestamp": time.time()}, 200
 
 # =============================
-# 13. إعداد Webhook للتليجرام
+# 15. إعداد Webhook للتليجرام
 # =============================
 @app.route("/set_webhook")
 def set_webhook():
