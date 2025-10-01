@@ -457,9 +457,43 @@ def telegram_webhook():
                 send_to_client(contact_id, "✅ تم تنفيذ طلبك بنجاح", channel)
                 new_text = f"✅ تم تنفيذ الطلب.\nContact ID: {contact_id}\nChannel: {channel}"
                 
+                # تعديل الرسالة الأصلية في الجروب
+                edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                edit_payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": new_text,
+                    "parse_mode": "HTML"
+                }
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
+                
+                if edit_response.status_code == 200:
+                    # مسح رسالة التأكيد بعد 5 ثواني
+                    delete_message_after_delay(chat_id, message_id, 5)
+                    logger.info(f"Success message scheduled for deletion: {message_id}")
+                else:
+                    logger.error(f"Failed to edit message: {edit_response.text}")
+                
             elif action == "cancel":
                 send_to_client(contact_id, "❌ تم إلغاء طلبك.", channel)
                 new_text = f"❌ تم إلغاء الطلب.\nContact ID: {contact_id}\nChannel: {channel}"
+                
+                # تعديل الرسالة الأصلية في الجروب
+                edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                edit_payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": new_text,
+                    "parse_mode": "HTML"
+                }
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
+                
+                if edit_response.status_code == 200:
+                    # مسح رسالة التأكيد بعد 5 ثواني
+                    delete_message_after_delay(chat_id, message_id, 5)
+                    logger.info(f"Cancel message scheduled for deletion: {message_id}")
+                else:
+                    logger.error(f"Failed to edit message: {edit_response.text}")
                 
             elif action == "sendpic":
                 # حفظ معرف الرسالة الحالية (التي تحتوي على طلب رفع الصورة)
@@ -470,21 +504,18 @@ def telegram_webhook():
                 }
                 new_text = f"📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل.\nContact ID: {contact_id}\nChannel: {channel}"
                 
-            else:
-                new_text = "ℹ️ عملية غير معروفة."
-
-            # تعديل الرسالة الأصلية في الجروب
-            edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
-            edit_payload = {
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "text": new_text,
-                "parse_mode": "HTML"
-            }
-            edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
-            
-            if edit_response.status_code != 200:
-                logger.error(f"Failed to edit message: {edit_response.text}")
+                # تعديل الرسالة الأصلية في الجروب
+                edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                edit_payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": new_text,
+                    "parse_mode": "HTML"
+                }
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
+                
+                if edit_response.status_code != 200:
+                    logger.error(f"Failed to edit message: {edit_response.text}")
 
         # التعامل مع الصور
         elif "message" in data and "photo" in data["message"]:
