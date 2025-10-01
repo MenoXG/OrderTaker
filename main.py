@@ -1,6 +1,6 @@
 import os
 import requests
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import logging
 
 # إعداد logging
@@ -165,55 +165,59 @@ def telegram_webhook():
             logger.error("TELEGRAM_TOKEN not set")
             return {"status": "error"}, 500
 
-        data = request.json
+        data = request.get_json()
         logger.info(f"Received Telegram update: {data}")
 
-        # التعامل مع الأزرار
-        if "callback_query" in data:
+        # إذا كان هناك callback query (ضغط على زر)
+        if data and "callback_query" in data:
             callback = data["callback_query"]
             query_id = callback["id"]
             chat_id = callback["message"]["chat"]["id"]
             message_id = callback["message"]["message_id"]
             callback_data = callback["data"]
 
-            logger.info(f"Callback received: {callback_data}")
+            logger.info(f"Callback received: {callback_data} from chat {chat_id}")
 
-            # الرد على callback query
+            # الرد على callback query لإزالة "Loading" من الزر
             requests.post(
                 f"https://api.telegram.org/bot{token}/answerCallbackQuery",
                 json={"callback_query_id": query_id}
             )
 
+            # معالجة الإجراءات المختلفة
             if callback_data.startswith("done:"):
                 contact_id = callback_data.split(":")[1]
                 send_to_client(contact_id, "✅ نعم تم تنفيذ طلبك بنجاح.")
-                new_text = "✅ تم تنفيذ الطلب."
+                new_text = f"✅ تم تنفيذ الطلب.\nContact ID: {contact_id}"
+                
             elif callback_data.startswith("cancel:"):
                 contact_id = callback_data.split(":")[1]
                 send_to_client(contact_id, "❌ تم إلغاء طلبك.")
-                new_text = "❌ تم إلغاء الطلب."
+                new_text = f"❌ تم إلغاء الطلب.\nContact ID: {contact_id}"
+                
             elif callback_data.startswith("sendpic:"):
                 contact_id = callback_data.split(":")[1]
                 pending_photos[chat_id] = contact_id
-                new_text = "📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل."
+                new_text = f"📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل.\nContact ID: {contact_id}"
+                
             else:
                 new_text = "ℹ️ عملية غير معروفة."
 
-            # تعديل الرسالة في الجروب
+            # تعديل الرسالة الأصلية في الجروب
             edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
-            payload = {
+            edit_payload = {
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "text": new_text,
                 "parse_mode": "HTML"
             }
-            response = requests.post(edit_url, json=payload)
+            edit_response = requests.post(edit_url, json=edit_payload)
             
-            if response.status_code != 200:
-                logger.error(f"Failed to edit message: {response.text}")
+            if edit_response.status_code != 200:
+                logger.error(f"Failed to edit message: {edit_response.text}")
 
-        # التعامل مع الصور
-        elif "message" in data and "photo" in data["message"]:
+        # إذا كانت هناك صورة مرسلة
+        elif data and "message" in data and "photo" in data["message"]:
             message_data = data["message"]
             chat_id = message_data["chat"]["id"]
             message_id = message_data["message_id"]
@@ -222,27 +226,40 @@ def telegram_webhook():
 
             if chat_id in pending_photos:
                 contact_id = pending_photos.pop(chat_id)
-                photo = message_data["photo"][-1]  # أعلى دقة
+                # نأخذ أعلى دقة للصورة (آخر عنصر في المصفوفة)
+                photo = message_data["photo"][-1]
                 file_id = photo["file_id"]
 
-                # الحصول على رابط الصورة
-                file_info_response = requests.get(
-                    f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
-                )
+                logger.info(f"Processing photo for contact {contact_id}")
+
+                # الحصول على معلومات الملف
+                file_info_url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
+                file_info_response = requests.get(file_info_url)
                 
                 if file_info_response.status_code == 200:
                     file_info = file_info_response.json()
-                    file_path = file_info["result"]["file_path"]
-                    file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+                    if file_info["ok"]:
+                        file_path = file_info["result"]["file_path"]
+                        file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
 
-                    # إرسال الصورة للعميل
-                    send_to_client(contact_id, f"📷 رابط الصورة: {file_url}")
-
-                    # حذف الصورة من الجروب
-                    delete_url = f"https://api.telegram.org/bot{token}/deleteMessage"
-                    requests.post(delete_url, json={"chat_id": chat_id, "message_id": message_id})
-                    
-                    logger.info(f"Photo sent to client {contact_id} and deleted from group")
+                        # إرسال الصورة للعميل
+                        success = send_to_client(contact_id, f"📷 تم استلام صورة من الدعم الفني:\n{file_url}")
+                        
+                        if success:
+                            # إرسال رسالة تأكيد في الجروب
+                            requests.post(
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={
+                                    "chat_id": chat_id,
+                                    "text": f"✅ تم إرسال الصورة للعميل (Contact ID: {contact_id})",
+                                    "reply_to_message_id": message_id
+                                }
+                            )
+                            logger.info(f"Photo sent to client {contact_id}")
+                        else:
+                            logger.error(f"Failed to send photo to client {contact_id}")
+                    else:
+                        logger.error("File info not OK in response")
                 else:
                     logger.error("Failed to get file info from Telegram")
 
@@ -267,18 +284,46 @@ def home():
     }
 
 # =============================
-# 7. إعداد Webhook للتليجرام (اختياري)
+# 7. إعداد Webhook للتليجرام
 # =============================
 @app.route("/set_webhook")
 def set_webhook():
     try:
         token = os.getenv("TELEGRAM_TOKEN")
-        webhook_url = os.getenv("RAILWAY_STATIC_URL")  # أو استخدم DOMAIN المتغير
+        webhook_url = os.getenv("RAILWAY_STATIC_URL")
         
         if not webhook_url:
-            return {"error": "RAILWAY_STATIC_URL not set"}, 400
+            # إذا لم يكن RAILWAY_STATIC_URL موجوداً، حاول استخدام Railway's default domain
+            railway_environment = os.getenv("RAILWAY_ENVIRONMENT")
+            if railway_environment:
+                webhook_url = f"https://{os.getenv('RAILWAY_SERVICE_NAME')}.up.railway.app"
+            else:
+                return {"error": "RAILWAY_STATIC_URL not set"}, 400
             
         url = f"https://api.telegram.org/bot{token}/setWebhook?url={webhook_url}/telegram"
+        response = requests.get(url)
+        result = response.json()
+        logger.info(f"Webhook set: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Error setting webhook: {e}")
+        return {"error": str(e)}, 500
+
+@app.route("/delete_webhook")
+def delete_webhook():
+    try:
+        token = os.getenv("TELEGRAM_TOKEN")
+        url = f"https://api.telegram.org/bot{token}/deleteWebhook"
+        response = requests.get(url)
+        return response.json()
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+@app.route("/webhook_info")
+def webhook_info():
+    try:
+        token = os.getenv("TELEGRAM_TOKEN")
+        url = f"https://api.telegram.org/bot{token}/getWebhookInfo"
         response = requests.get(url)
         return response.json()
     except Exception as e:
