@@ -195,7 +195,7 @@ def telegram_webhook():
             # معالجة الإجراءات المختلفة
             if callback_data.startswith("done:"):
                 contact_id = callback_data.split(":")[1]
-                send_to_client(contact_id, "✅ نعم تم تنفيذ طلبك بنجاح.")
+                send_to_client(contact_id, "✅ تم تنفيذ طلبك بنجاح")
                 new_text = f"✅ تم تنفيذ الطلب.\nContact ID: {contact_id}"
                 
             elif callback_data.startswith("cancel:"):
