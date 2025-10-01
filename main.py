@@ -62,7 +62,7 @@ def send_to_client(contact_id, text):
 # =============================
 # 3. إرسال صورة للعميل عبر SendPulse API
 # =============================
-def send_photo_to_client(contact_id, photo_url, caption="📸 صورة من فريق الدعم الفني"):
+def send_photo_to_client(contact_id, photo_url):
     try:
         token = get_sendpulse_token()
         if not token:
@@ -70,19 +70,29 @@ def send_photo_to_client(contact_id, photo_url, caption="📸 صورة من فر
             return False
             
         url = "https://api.sendpulse.com/telegram/contacts/send"
+        
+        # التصحيح هنا: استخدام payload الصحيح
         payload = {
-            "contact_id": contact_id,
+            "contact_id": contact_id,  # استخدام contact_id المتغير
             "message": {
                 "type": "photo",
-                "photo": photo_url,
-                "caption": caption
+                "photo": photo_url,    # استخدام photo_url المتغير
+                "caption": "📸 صورة من فريق الدعم الفني"
             }
         }
+        
         headers = {"Authorization": f"Bearer {token}"}
+        
+        logger.info(f"Sending photo to contact {contact_id} with URL: {photo_url}")
+        logger.info(f"Payload: {payload}")
+        
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         
+        logger.info(f"SendPulse response status: {response.status_code}")
+        logger.info(f"SendPulse response text: {response.text}")
+        
         if response.status_code == 200:
-            logger.info(f"Photo sent to client {contact_id}")
+            logger.info(f"Photo sent successfully to client {contact_id}")
             return True
         else:
             logger.error(f"Failed to send photo to {contact_id}: {response.status_code} - {response.text}")
@@ -287,8 +297,11 @@ def telegram_webhook():
                         file_path = file_info["result"]["file_path"]
                         file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
 
+                        logger.info(f"Photo URL: {file_url}")
+                        logger.info(f"Contact ID for photo: {contact_id}")
+
                         # إرسال الصورة نفسها للعميل عبر SendPulse API
-                        success = send_photo_to_client(contact_id, file_url, "📸 صورة من فريق الدعم الفني")
+                        success = send_photo_to_client(contact_id, file_url)
                         
                         if success:
                             # إرسال رسالة تأكيد في الجروب
@@ -301,9 +314,11 @@ def telegram_webhook():
                                 },
                                 timeout=30
                             )
-                            logger.info(f"Photo sent to client {contact_id}")
+                            logger.info(f"Photo sent successfully to client {contact_id}")
                         else:
                             logger.error(f"Failed to send photo to client {contact_id}")
+                            # إذا فشل إرسال الصورة، نرسل رسالة نصية تحتوي على الرابط
+                            send_to_client(contact_id, f"📸 صورة من الدعم الفني: {file_url}")
 
         return {"status": "ok"}, 200
         
