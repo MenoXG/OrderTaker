@@ -26,7 +26,7 @@ def get_sendpulse_token():
 # =============================
 def send_to_client(contact_id, text):
     token = get_sendpulse_token()
-    url = f"https://api.sendpulse.com/telegram/contacts/sendText"
+    url = "https://api.sendpulse.com/telegram/contacts/sendText"
     payload = {"contact_id": contact_id, "text": text}
     headers = {"Authorization": f"Bearer {token}"}
     requests.post(url, json=payload, headers=headers)
@@ -109,9 +109,14 @@ def telegram_webhook():
     # التعامل مع الأزرار
     if "callback_query" in data:
         callback = data["callback_query"]
+        query_id = callback["id"]
         chat_id = callback["message"]["chat"]["id"]
         message_id = callback["message"]["message_id"]
         action = callback["data"]
+
+        # لازم نرد عشان الزر يشتغل
+        requests.post(f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                      json={"callback_query_id": query_id})
 
         if action.startswith("done:"):
             contact_id = action.split(":")[1]
@@ -128,7 +133,7 @@ def telegram_webhook():
         else:
             text = "ℹ️ عملية غير معروفة."
 
-        # تعديل نص الرسالة في الجروب
+        # تعديل الرسالة في الجروب
         edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
         payload = {
             "chat_id": chat_id,
@@ -136,7 +141,7 @@ def telegram_webhook():
             "text": text,
             "parse_mode": "HTML"
         }
-        requests.post(edit_url, data=payload)
+        requests.post(edit_url, json=payload)
 
     # التعامل مع الصور
     if "message" in data and "photo" in data["message"]:
