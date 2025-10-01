@@ -588,7 +588,7 @@ def telegram_webhook():
                 else:
                     new_text = f"❌ فشل تشغيل تحويل ناقص.\nContact ID: {contact_id}\nChannel: {channel}"
                 
-                # تعديل الرسالة الأصلية في الجروب
+                # تعديل الرسالة الأصلية في الجروب - لا يتم مسحها
                 edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
                 edit_payload = {
                     "chat_id": chat_id,
@@ -599,9 +599,7 @@ def telegram_webhook():
                 edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
                 
                 if edit_response.status_code == 200:
-                    # مسح رسالة التأكيد بعد 5 ثواني
-                    delete_message_after_delay(chat_id, message_id, 5)
-                    logger.info(f"Transfer message scheduled for deletion: {message_id}")
+                    logger.info(f"Transfer message updated successfully: {message_id}")
                 else:
                     logger.error(f"Failed to edit message: {edit_response.text}")
 
