@@ -60,9 +60,9 @@ def send_to_client(contact_id, text):
         return False
 
 # =============================
-# 3. إرسال صورة للعميل عبر SendPulse API
+# 3. إرسال صورة للعميل باستخدام file_id مباشرة
 # =============================
-def send_photo_to_client(contact_id, photo_url):
+def send_photo_to_client(contact_id, file_id):
     try:
         token = get_sendpulse_token()
         if not token:
@@ -71,19 +71,19 @@ def send_photo_to_client(contact_id, photo_url):
             
         url = "https://api.sendpulse.com/telegram/contacts/send"
         
-        # التصحيح هنا: استخدام payload الصحيح
+        # استخدام file_id مباشرة بدلاً من الرابط
         payload = {
-            "contact_id": contact_id,  # استخدام contact_id المتغير
+            "contact_id": contact_id,
             "message": {
                 "type": "photo",
-                "photo": photo_url,    # استخدام photo_url المتغير
+                "photo": file_id,  # استخدام file_id مباشرة
                 "caption": "📸 صورة من فريق الدعم الفني"
             }
         }
         
         headers = {"Authorization": f"Bearer {token}"}
         
-        logger.info(f"Sending photo to contact {contact_id} with URL: {photo_url}")
+        logger.info(f"Sending photo to contact {contact_id} with file_id: {file_id}")
         logger.info(f"Payload: {payload}")
         
         response = requests.post(url, json=payload, headers=headers, timeout=30)
@@ -286,39 +286,43 @@ def telegram_webhook():
                 file_id = photo["file_id"]
 
                 logger.info(f"Processing photo for contact {contact_id}")
+                logger.info(f"File ID: {file_id}")
+                logger.info(f"Contact ID for photo: {contact_id}")
 
-                # الحصول على معلومات الملف
-                file_info_url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
-                file_info_response = requests.get(file_info_url, timeout=30)
+                # المحاولة 1: إرسال file_id مباشرة إلى SendPulse
+                success = send_photo_to_client(contact_id, file_id)
                 
-                if file_info_response.status_code == 200:
-                    file_info = file_info_response.json()
-                    if file_info.get("ok"):
-                        file_path = file_info["result"]["file_path"]
-                        file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
-
-                        logger.info(f"Photo URL: {file_url}")
-                        logger.info(f"Contact ID for photo: {contact_id}")
-
-                        # إرسال الصورة نفسها للعميل عبر SendPulse API
-                        success = send_photo_to_client(contact_id, file_url)
-                        
-                        if success:
-                            # إرسال رسالة تأكيد في الجروب
-                            requests.post(
-                                f"https://api.telegram.org/bot{token}/sendMessage",
-                                json={
-                                    "chat_id": chat_id,
-                                    "text": f"✅ تم إرسال الصورة للعميل (Contact ID: {contact_id})",
-                                    "reply_to_message_id": message_id
-                                },
-                                timeout=30
-                            )
-                            logger.info(f"Photo sent successfully to client {contact_id}")
-                        else:
-                            logger.error(f"Failed to send photo to client {contact_id}")
-                            # إذا فشل إرسال الصورة، نرسل رسالة نصية تحتوي على الرابط
+                if not success:
+                    # المحاولة 2: إذا فشل، نرسل الرابط كبديل
+                    logger.info("Trying to send photo URL as fallback...")
+                    
+                    # الحصول على رابط الصورة
+                    file_info_url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
+                    file_info_response = requests.get(file_info_url, timeout=30)
+                    
+                    if file_info_response.status_code == 200:
+                        file_info = file_info_response.json()
+                        if file_info.get("ok"):
+                            file_path = file_info["result"]["file_path"]
+                            file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+                            
+                            # إرسال الرابط كرسالة نصية
                             send_to_client(contact_id, f"📸 صورة من الدعم الفني: {file_url}")
+                
+                if success:
+                    # إرسال رسالة تأكيد في الجروب
+                    requests.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={
+                            "chat_id": chat_id,
+                            "text": f"✅ تم إرسال الصورة للعميل (Contact ID: {contact_id})",
+                            "reply_to_message_id": message_id
+                        },
+                        timeout=30
+                    )
+                    logger.info(f"Photo sent successfully to client {contact_id}")
+                else:
+                    logger.error(f"Failed to send photo to client {contact_id}")
 
         return {"status": "ok"}, 200
         
