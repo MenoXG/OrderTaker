@@ -1,6 +1,6 @@
 import os
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request
 import logging
 import time
 
@@ -72,6 +72,10 @@ def send_to_telegram(message, contact_id):
             return False
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
+        
+        # إنشاء رابط SendPulse مع contact_id
+        sendpulse_url = f"https://login.sendpulse.com/chatbots/chats?contact_id={contact_id}&channel=telegram"
+        
         keyboard = {
             "inline_keyboard": [
                 [
@@ -79,7 +83,8 @@ def send_to_telegram(message, contact_id):
                     {"text": "❌ إلغاء", "callback_data": f"cancel:{contact_id}"},
                 ],
                 [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}"}
+                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}"},
+                    {"text": "💬 فتح المحادثة", "url": sendpulse_url}
                 ]
             ]
         }
@@ -205,7 +210,7 @@ def telegram_webhook():
                 
             elif callback_data.startswith("sendpic:"):
                 contact_id = callback_data.split(":")[1]
-                pending_photos[str(chat_id)] = contact_id  # تأكد من أنه string
+                pending_photos[str(chat_id)] = contact_id
                 new_text = f"📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل.\nContact ID: {contact_id}"
                 
             else:
@@ -232,9 +237,8 @@ def telegram_webhook():
 
             logger.info(f"Photo received in chat {chat_id}")
 
-            if str(chat_id) in pending_photos:  # تأكد من المقارنة كـ string
+            if str(chat_id) in pending_photos:
                 contact_id = pending_photos.pop(str(chat_id))
-                # نأخذ أعلى دقة للصورة (آخر عنصر في المصفوفة)
                 photo = message_data["photo"][-1]
                 file_id = photo["file_id"]
 
@@ -267,10 +271,6 @@ def telegram_webhook():
                             logger.info(f"Photo sent to client {contact_id}")
                         else:
                             logger.error(f"Failed to send photo to client {contact_id}")
-                    else:
-                        logger.error("File info not OK in response")
-                else:
-                    logger.error("Failed to get file info from Telegram")
 
         return {"status": "ok"}, 200
         
@@ -279,20 +279,14 @@ def telegram_webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 6. صفحة رئيسية للتحقق من أن الخادم يعمل
+# 6. صفحات التحقق
 # =============================
 @app.route("/")
 def home():
     return {
         "status": "running",
         "service": "Telegram Bot Webhook",
-        "timestamp": time.time(),
-        "endpoints": {
-            "webhook": "/webhook (POST)",
-            "telegram": "/telegram (POST)",
-            "health": "/health (GET)",
-            "set_webhook": "/set_webhook (GET)"
-        }
+        "timestamp": time.time()
     }
 
 @app.route("/health")
@@ -309,10 +303,7 @@ def set_webhook():
         webhook_url = os.getenv("RAILWAY_STATIC_URL")
         
         if not webhook_url:
-            webhook_url = f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN')}"
-            
-        if not webhook_url:
-            return {"error": "RAILWAY_STATIC_URL or RAILWAY_PUBLIC_DOMAIN not set"}, 400
+            return {"error": "RAILWAY_STATIC_URL not set"}, 400
         
         url = f"https://api.telegram.org/bot{token}/setWebhook?url={webhook_url}/telegram"
         response = requests.get(url, timeout=30)
