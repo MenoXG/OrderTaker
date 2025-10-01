@@ -4,13 +4,37 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
+# Telegram
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = os.getenv("GROUP_ID")
-SENDPULSE_TOKEN = os.getenv("SENDPULSE_TOKEN")
 
-if not BOT_TOKEN or not GROUP_ID or not SENDPULSE_TOKEN:
-    print("❌ Error: Missing environment variables (BOT_TOKEN, GROUP_ID, SENDPULSE_TOKEN)")
+# SendPulse credentials
+SENDPULSE_CLIENT_ID = os.getenv("SENDPULSE_CLIENT_ID")
+SENDPULSE_CLIENT_SECRET = os.getenv("SENDPULSE_CLIENT_SECRET")
+
+if not BOT_TOKEN or not GROUP_ID or not SENDPULSE_CLIENT_ID or not SENDPULSE_CLIENT_SECRET:
+    print("❌ Error: Missing environment variables")
     raise SystemExit(1)
+
+
+def get_sendpulse_token():
+    """
+    Get access token from SendPulse using client_id and client_secret
+    """
+    url = "https://api.sendpulse.com/oauth/access_token"
+    payload = {
+        "grant_type": "client_credentials",
+        "client_id": SENDPULSE_CLIENT_ID,
+        "client_secret": SENDPULSE_CLIENT_SECRET,
+    }
+    try:
+        resp = requests.post(url, data=payload)
+        resp.raise_for_status()
+        token = resp.json().get("access_token")
+        return token
+    except Exception as e:
+        print("❌ Error getting SendPulse token:", e)
+        return None
 
 
 @app.route("/", methods=["GET"])
@@ -55,6 +79,7 @@ def webhook():
             f"📞 Contact ID: {contact_id}"
         )
 
+        # Send to Telegram group
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         resp = requests.post(url, json={"chat_id": GROUP_ID, "text": message})
         print("✅ Telegram response:", resp.text)
