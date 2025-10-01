@@ -583,25 +583,32 @@ def telegram_webhook():
                 # تشغيل Flow تحويل ناقص
                 success = run_flow(contact_id, channel)
                 if success:
-                    new_text = f"🔄 تم تشغيل تحويل ناقص للعميل.\nContact ID: {contact_id}\nChannel: {channel}"
+                    # إرسال رسالة تأكيد منفصلة ومسحها بعد 5 ثواني
+                    confirmation_message = f"🔄 تم تحويل الطلب إلى قسم المبيعات.\nContact ID: {contact_id}\nChannel: {channel}"
                     send_to_client(contact_id, "🔄 تم تحويل طلبك إلى قسم المبيعات للمتابعة", channel)
                 else:
-                    new_text = f"❌ فشل تشغيل تحويل ناقص.\nContact ID: {contact_id}\nChannel: {channel}"
+                    confirmation_message = f"❌ فشل تحويل الطلب.\nContact ID: {contact_id}\nChannel: {channel}"
                 
-                # تعديل الرسالة الأصلية في الجروب - لا يتم مسحها
-                edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
-                edit_payload = {
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "text": new_text,
-                    "parse_mode": "HTML"
-                }
-                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
+                # إرسال رسالة تأكيد منفصلة
+                confirmation_response = requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": confirmation_message,
+                        "parse_mode": "HTML"
+                    },
+                    timeout=30
+                )
                 
-                if edit_response.status_code == 200:
-                    logger.info(f"Transfer message updated successfully: {message_id}")
+                if confirmation_response.status_code == 200:
+                    confirmation_data = confirmation_response.json()
+                    confirmation_message_id = confirmation_data['result']['message_id']
+                    
+                    # مسح رسالة التأكيد بعد 5 ثواني
+                    delete_message_after_delay(chat_id, confirmation_message_id, 5)
+                    logger.info(f"Transfer confirmation message scheduled for deletion: {confirmation_message_id}")
                 else:
-                    logger.error(f"Failed to edit message: {edit_response.text}")
+                    logger.error(f"Failed to send confirmation message: {confirmation_response.text}")
 
         # التعامل مع الصور
         elif "message" in data and "photo" in data["message"]:
