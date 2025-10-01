@@ -60,7 +60,62 @@ def send_to_client(contact_id, text):
         return False
 
 # =============================
-# 3. إرسال رسالة إلى جروب تليجرام مع أزرار
+# 3. إرسال صورة للعميل مباشرة عبر Telegram
+# =============================
+def send_photo_to_client(contact_id, file_url, telegram_token):
+    try:
+        # أولاً: نحتاج للحصول على chat_id العميل من خلال SendPulse
+        token = get_sendpulse_token()
+        if not token:
+            logger.error("No token available for SendPulse")
+            return False
+        
+        # الحصول على معلومات الاتصال من SendPulse
+        url = f"https://api.sendpulse.com/telegram/contacts/{contact_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+        response = requests.get(url, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            contact_info = response.json()
+            chat_id = contact_info.get('chat_id')
+            
+            if chat_id:
+                # إرسال الصورة مباشرة للعميل عبر Telegram API
+                send_photo_url = f"https://api.telegram.org/bot{telegram_token}/sendPhoto"
+                photo_payload = {
+                    "chat_id": chat_id,
+                    "photo": file_url,
+                    "caption": "📸 صورة من فريق الدعم الفني"
+                }
+                photo_response = requests.post(send_photo_url, json=photo_payload, timeout=30)
+                
+                if photo_response.status_code == 200:
+                    logger.info(f"Photo sent directly to client {contact_id}")
+                    return True
+                else:
+                    logger.error(f"Failed to send photo to client: {photo_response.text}")
+                    # إذا فشل إرسال الصورة، نرسل الرابط كبديل
+                    send_to_client(contact_id, f"📸 صورة من الدعم الفني: {file_url}")
+                    return False
+            else:
+                logger.error(f"No chat_id found for contact {contact_id}")
+                # إذا لم نجد chat_id، نرسل الرابط كبديل
+                send_to_client(contact_id, f"📸 صورة من الدعم الفني: {file_url}")
+                return False
+        else:
+            logger.error(f"Failed to get contact info: {response.text}")
+            # إذا فشل الحصول على معلومات الاتصال، نرسل الرابط كبديل
+            send_to_client(contact_id, f"📸 صورة من الدعم الفني: {file_url}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error sending photo to client: {e}")
+        # في حالة أي خطأ، نرسل الرابط كبديل
+        send_to_client(contact_id, f"📸 صورة من الدعم الفني: {file_url}")
+        return False
+
+# =============================
+# 4. إرسال رسالة إلى جروب تليجرام مع أزرار
 # =============================
 def send_to_telegram(message, contact_id):
     try:
@@ -107,7 +162,7 @@ def send_to_telegram(message, contact_id):
         return False
 
 # =============================
-# 4. استقبال Webhook من SendPulse
+# 5. استقبال Webhook من SendPulse
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -164,7 +219,7 @@ def webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 5. استقبال ضغط الأزرار + الصور من التليجرام
+# 6. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
@@ -239,6 +294,7 @@ def telegram_webhook():
 
             if str(chat_id) in pending_photos:
                 contact_id = pending_photos.pop(str(chat_id))
+                # نأخذ أعلى دقة للصورة (آخر عنصر في المصفوفة)
                 photo = message_data["photo"][-1]
                 file_id = photo["file_id"]
 
@@ -254,8 +310,8 @@ def telegram_webhook():
                         file_path = file_info["result"]["file_path"]
                         file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
 
-                        # إرسال الصورة للعميل
-                        success = send_to_client(contact_id, f"📷 تم استلام صورة من الدعم الفني:\n{file_url}")
+                        # إرسال الصورة نفسها للعميل (بدلاً من الرابط)
+                        success = send_photo_to_client(contact_id, file_url, token)
                         
                         if success:
                             # إرسال رسالة تأكيد في الجروب
@@ -279,7 +335,7 @@ def telegram_webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 6. صفحات التحقق
+# 7. صفحات التحقق
 # =============================
 @app.route("/")
 def home():
@@ -294,7 +350,7 @@ def health():
     return {"status": "healthy", "timestamp": time.time()}, 200
 
 # =============================
-# 7. إعداد Webhook للتليجرام
+# 8. إعداد Webhook للتليجرام
 # =============================
 @app.route("/set_webhook")
 def set_webhook():
