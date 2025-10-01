@@ -3,6 +3,8 @@ import requests
 from flask import Flask, request
 import logging
 import time
+import tempfile
+import shutil
 
 # إعداد logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -60,9 +62,73 @@ def send_to_client(contact_id, text):
         return False
 
 # =============================
-# 3. إرسال صورة للعميل باستخدام file_id مباشرة
+# 3. تحميل الصورة من Telegram وإنشاء رابط مؤقت
 # =============================
-def send_photo_to_client(contact_id, file_id):
+def download_and_create_temp_url(telegram_file_url, telegram_token, contact_id):
+    try:
+        # إنشاء مجلد مؤقت في ذاكرة Railway
+        temp_dir = tempfile.mkdtemp()
+        file_path = os.path.join(temp_dir, f"photo_{contact_id}.jpg")
+        
+        logger.info(f"Downloading photo from: {telegram_file_url}")
+        
+        # تحميل الصورة من Telegram
+        response = requests.get(telegram_file_url, stream=True, timeout=30)
+        
+        if response.status_code == 200:
+            # حفظ الصورة في الملف المؤقت
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            # الحصول على حجم الملف
+            file_size = os.path.getsize(file_path)
+            logger.info(f"Photo downloaded successfully: {file_size} bytes")
+            
+            # رفع الصورة إلى خدمة تخزين مؤقتة (سنستخدم tmpfiles.org)
+            with open(file_path, 'rb') as f:
+                upload_response = requests.post(
+                    'https://tmpfiles.org/api/v1/upload',
+                    files={'file': f},
+                    timeout=30
+                )
+            
+            # تنظيف الملف المؤقت
+            shutil.rmtree(temp_dir)
+            
+            if upload_response.status_code == 200:
+                upload_data = upload_response.json()
+                if upload_data.get('status') == 'success':
+                    # tmpfiles.org يعطينا رابط تنزيل مباشر
+                    download_url = upload_data['data']['url']
+                    # نحتاج لتحويل الرابط إلى صيغة مباشرة
+                    direct_url = download_url.replace('tmpfiles.org/', 'tmpfiles.org/dl/')
+                    logger.info(f"Temporary URL created: {direct_url}")
+                    return direct_url
+                else:
+                    logger.error(f"Upload failed: {upload_data}")
+                    return None
+            else:
+                logger.error(f"Upload failed with status: {upload_response.status_code}")
+                return None
+        else:
+            logger.error(f"Failed to download photo: {response.status_code}")
+            # تنظيف الملف المؤقت في حالة الخطأ
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error in download_and_create_temp_url: {e}")
+        # تنظيف الملف المؤقت في حالة الخطأ
+        if 'temp_dir' in locals() and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        return None
+
+# =============================
+# 4. إرسال صورة للعميل عبر SendPulse API
+# =============================
+def send_photo_to_client(contact_id, photo_url):
     try:
         token = get_sendpulse_token()
         if not token:
@@ -71,20 +137,19 @@ def send_photo_to_client(contact_id, file_id):
             
         url = "https://api.sendpulse.com/telegram/contacts/send"
         
-        # استخدام file_id مباشرة بدلاً من الرابط
         payload = {
             "contact_id": contact_id,
             "message": {
                 "type": "photo",
-                "photo": file_id,  # استخدام file_id مباشرة
+                "photo": photo_url,
                 "caption": "📸 صورة من فريق الدعم الفني"
             }
         }
         
         headers = {"Authorization": f"Bearer {token}"}
         
-        logger.info(f"Sending photo to contact {contact_id} with file_id: {file_id}")
-        logger.info(f"Payload: {payload}")
+        logger.info(f"Sending photo to contact {contact_id}")
+        logger.info(f"Photo URL: {photo_url}")
         
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         
@@ -102,7 +167,7 @@ def send_photo_to_client(contact_id, file_id):
         return False
 
 # =============================
-# 4. إرسال رسالة إلى جروب تليجرام مع أزرار
+# 5. إرسال رسالة إلى جروب تليجرام مع أزرار
 # =============================
 def send_to_telegram(message, contact_id):
     try:
@@ -149,7 +214,7 @@ def send_to_telegram(message, contact_id):
         return False
 
 # =============================
-# 5. استقبال Webhook من SendPulse
+# 6. استقبال Webhook من SendPulse
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -206,7 +271,7 @@ def webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 6. استقبال ضغط الأزرار + الصور من التليجرام
+# 7. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
@@ -287,42 +352,46 @@ def telegram_webhook():
 
                 logger.info(f"Processing photo for contact {contact_id}")
                 logger.info(f"File ID: {file_id}")
-                logger.info(f"Contact ID for photo: {contact_id}")
 
-                # المحاولة 1: إرسال file_id مباشرة إلى SendPulse
-                success = send_photo_to_client(contact_id, file_id)
+                # الحصول على معلومات الملف
+                file_info_url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
+                file_info_response = requests.get(file_info_url, timeout=30)
                 
-                if not success:
-                    # المحاولة 2: إذا فشل، نرسل الرابط كبديل
-                    logger.info("Trying to send photo URL as fallback...")
-                    
-                    # الحصول على رابط الصورة
-                    file_info_url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
-                    file_info_response = requests.get(file_info_url, timeout=30)
-                    
-                    if file_info_response.status_code == 200:
-                        file_info = file_info_response.json()
-                        if file_info.get("ok"):
-                            file_path = file_info["result"]["file_path"]
-                            file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+                if file_info_response.status_code == 200:
+                    file_info = file_info_response.json()
+                    if file_info.get("ok"):
+                        file_path = file_info["result"]["file_path"]
+                        file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+
+                        logger.info(f"Telegram file URL: {file_url}")
+                        
+                        # 1. تحميل الصورة وإنشاء رابط مؤقت
+                        temp_photo_url = download_and_create_temp_url(file_url, token, contact_id)
+                        
+                        if temp_photo_url:
+                            # 2. إرسال الصورة باستخدام الرابط المؤقت
+                            success = send_photo_to_client(contact_id, temp_photo_url)
                             
-                            # إرسال الرابط كرسالة نصية
+                            if success:
+                                # 3. إرسال رسالة تأكيد في الجروب
+                                requests.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={
+                                        "chat_id": chat_id,
+                                        "text": f"✅ تم إرسال الصورة للعميل (Contact ID: {contact_id})",
+                                        "reply_to_message_id": message_id
+                                    },
+                                    timeout=30
+                                )
+                                logger.info(f"Photo sent successfully to client {contact_id}")
+                            else:
+                                logger.error(f"Failed to send photo to client {contact_id}")
+                                # إذا فشل إرسال الصورة، نرسل الرابط كبديل
+                                send_to_client(contact_id, f"📸 صورة من الدعم الفني: {temp_photo_url}")
+                        else:
+                            logger.error("Failed to create temporary photo URL")
+                            # إذا فشل إنشاء الرابط المؤقت، نرسل الرابط الأصلي
                             send_to_client(contact_id, f"📸 صورة من الدعم الفني: {file_url}")
-                
-                if success:
-                    # إرسال رسالة تأكيد في الجروب
-                    requests.post(
-                        f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={
-                            "chat_id": chat_id,
-                            "text": f"✅ تم إرسال الصورة للعميل (Contact ID: {contact_id})",
-                            "reply_to_message_id": message_id
-                        },
-                        timeout=30
-                    )
-                    logger.info(f"Photo sent successfully to client {contact_id}")
-                else:
-                    logger.error(f"Failed to send photo to client {contact_id}")
 
         return {"status": "ok"}, 200
         
@@ -331,7 +400,7 @@ def telegram_webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 7. صفحات التحقق
+# 8. صفحات التحقق
 # =============================
 @app.route("/")
 def home():
@@ -346,7 +415,7 @@ def health():
     return {"status": "healthy", "timestamp": time.time()}, 200
 
 # =============================
-# 8. إعداد Webhook للتليجرام
+# 9. إعداد Webhook للتليجرام
 # =============================
 @app.route("/set_webhook")
 def set_webhook():
