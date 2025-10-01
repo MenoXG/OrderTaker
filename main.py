@@ -16,6 +16,12 @@ app = Flask(__name__)
 # ذاكرة مؤقتة (chat_id → {contact_id, channel, request_message_id})
 pending_photos = {}
 
+# Flow IDs لكل قناة
+FLOW_IDS = {
+    "telegram": "6856d410b7a060fae70c2ea6",
+    "messenger": "7c354af9-9df2-4e1d-8cac-768c4ac9f472"
+}
+
 # =============================
 # 1. دالة مسح الرسائل من التليجرام
 # =============================
@@ -77,7 +83,60 @@ def get_sendpulse_token():
         return None
 
 # =============================
-# 4. إرسال رسالة للعميل عبر SendPulse (Telegram)
+# 4. تشغيل Flow في SendPulse
+# =============================
+def run_flow(contact_id, channel):
+    try:
+        token = get_sendpulse_token()
+        if not token:
+            logger.error("No token available for SendPulse")
+            return False
+
+        # تحديد الـ endpoint بناءً على القناة
+        if channel == "telegram":
+            url = "https://api.sendpulse.com/telegram/flows/run"
+        elif channel == "messenger":
+            url = "https://api.sendpulse.com/messenger/flows/run"
+        else:
+            logger.error(f"Unknown channel for flow: {channel}")
+            return False
+
+        # الحصول على الـ flow_id المناسب للقناة
+        flow_id = FLOW_IDS.get(channel)
+        if not flow_id:
+            logger.error(f"No flow_id defined for channel: {channel}")
+            return False
+
+        payload = {
+            "contact_id": contact_id,
+            "flow_id": flow_id,
+            "external_data": {
+                "tracking_number": "1234-0987-5678-9012"
+            }
+        }
+
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        logger.info(f"Running flow for contact {contact_id} on channel {channel}")
+        logger.info(f"Flow ID: {flow_id}")
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        logger.info(f"SendPulse Flow response status: {response.status_code}")
+        logger.info(f"SendPulse Flow response text: {response.text}")
+        
+        if response.status_code == 200:
+            logger.info(f"Flow started successfully for client {contact_id} on channel {channel}")
+            return True
+        else:
+            logger.error(f"Failed to start flow for {contact_id}: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error running flow: {e}")
+        return False
+
+# =============================
+# 5. إرسال رسالة للعميل عبر SendPulse (Telegram)
 # =============================
 def send_to_client_telegram(contact_id, text):
     try:
@@ -102,7 +161,7 @@ def send_to_client_telegram(contact_id, text):
         return False
 
 # =============================
-# 5. إرسال رسالة للعميل عبر SendPulse (Messenger)
+# 6. إرسال رسالة للعميل عبر SendPulse (Messenger)
 # =============================
 def send_to_client_messenger(contact_id, text):
     try:
@@ -132,7 +191,7 @@ def send_to_client_messenger(contact_id, text):
         return False
 
 # =============================
-# 6. دالة موحدة لإرسال الرسائل بناءً على القناة
+# 7. دالة موحدة لإرسال الرسائل بناءً على القناة
 # =============================
 def send_to_client(contact_id, text, channel):
     if channel == "telegram":
@@ -144,7 +203,7 @@ def send_to_client(contact_id, text, channel):
         return False
 
 # =============================
-# 7. تحميل الصورة من Telegram وإنشاء رابط مؤقت
+# 8. تحميل الصورة من Telegram وإنشاء رابط مؤقت
 # =============================
 def download_and_create_temp_url(telegram_file_url, telegram_token, contact_id):
     try:
@@ -208,7 +267,7 @@ def download_and_create_temp_url(telegram_file_url, telegram_token, contact_id):
         return None
 
 # =============================
-# 8. إرسال صورة للعميل عبر SendPulse API (Telegram)
+# 9. إرسال صورة للعميل عبر SendPulse API (Telegram)
 # =============================
 def send_photo_to_client_telegram(contact_id, photo_url):
     try:
@@ -249,7 +308,7 @@ def send_photo_to_client_telegram(contact_id, photo_url):
         return False
 
 # =============================
-# 9. إرسال صورة للعميل عبر SendPulse API (Messenger)
+# 10. إرسال صورة للعميل عبر SendPulse API (Messenger)
 # =============================
 def send_photo_to_client_messenger(contact_id, photo_url):
     try:
@@ -291,7 +350,7 @@ def send_photo_to_client_messenger(contact_id, photo_url):
         return False
 
 # =============================
-# 10. دالة موحدة لإرسال الصور بناءً على القناة
+# 11. دالة موحدة لإرسال الصور بناءً على القناة
 # =============================
 def send_photo_to_client(contact_id, photo_url, channel):
     if channel == "telegram":
@@ -303,7 +362,7 @@ def send_photo_to_client(contact_id, photo_url, channel):
         return False
 
 # =============================
-# 11. إرسال رسالة إلى جروب تليجرام مع أزرار
+# 12. إرسال رسالة إلى جروب تليجرام مع أزرار
 # =============================
 def send_to_telegram(message, contact_id, channel):
     try:
@@ -331,6 +390,9 @@ def send_to_telegram(message, contact_id, channel):
                 ],
                 [
                     {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
+                    {"text": "🔄 تحويل ناقص", "callback_data": f"transfer:{contact_id}:{channel}"}
+                ],
+                [
                     {"text": "💬 فتح المحادثة", "url": sendpulse_url}
                 ]
             ]
@@ -354,7 +416,7 @@ def send_to_telegram(message, contact_id, channel):
         return False
 
 # =============================
-# 12. استقبال Webhook من SendPulse
+# 13. استقبال Webhook من SendPulse
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -413,7 +475,7 @@ def webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 13. استقبال ضغط الأزرار + الصور من التليجرام
+# 14. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
@@ -517,6 +579,32 @@ def telegram_webhook():
                 if edit_response.status_code != 200:
                     logger.error(f"Failed to edit message: {edit_response.text}")
 
+            elif action == "transfer":
+                # تشغيل Flow تحويل ناقص
+                success = run_flow(contact_id, channel)
+                if success:
+                    new_text = f"🔄 تم تشغيل تحويل ناقص للعميل.\nContact ID: {contact_id}\nChannel: {channel}"
+                    send_to_client(contact_id, "🔄 تم تحويل طلبك إلى قسم المبيعات للمتابعة", channel)
+                else:
+                    new_text = f"❌ فشل تشغيل تحويل ناقص.\nContact ID: {contact_id}\nChannel: {channel}"
+                
+                # تعديل الرسالة الأصلية في الجروب
+                edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                edit_payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": new_text,
+                    "parse_mode": "HTML"
+                }
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
+                
+                if edit_response.status_code == 200:
+                    # مسح رسالة التأكيد بعد 5 ثواني
+                    delete_message_after_delay(chat_id, message_id, 5)
+                    logger.info(f"Transfer message scheduled for deletion: {message_id}")
+                else:
+                    logger.error(f"Failed to edit message: {edit_response.text}")
+
         # التعامل مع الصور
         elif "message" in data and "photo" in data["message"]:
             message_data = data["message"]
@@ -601,7 +689,7 @@ def telegram_webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 14. صفحات التحقق
+# 15. صفحات التحقق
 # =============================
 @app.route("/")
 def home():
@@ -616,7 +704,7 @@ def health():
     return {"status": "healthy", "timestamp": time.time()}, 200
 
 # =============================
-# 15. إعداد Webhook للتليجرام
+# 16. إعداد Webhook للتليجرام
 # =============================
 @app.route("/set_webhook")
 def set_webhook():
