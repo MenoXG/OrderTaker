@@ -368,9 +368,9 @@ def send_photo_to_client(contact_id, photo_url, channel):
         return False
 
 # =============================
-# 12. إرسال رسالة إلى جروب تليجرام مع أزرار (للطلبات الجديدة)
+# 12. إرسال رسالة إلى جروب تليجرام بناءً على السيناريو
 # =============================
-def send_to_telegram(message, contact_id, channel):
+def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
     try:
         token = os.getenv("TELEGRAM_TOKEN")
         group_id = os.getenv("GROUP_ID")
@@ -388,8 +388,12 @@ def send_to_telegram(message, contact_id, channel):
         channel_icon = "📱" if channel == "messenger" else "✈️"
         message_with_channel = f"{channel_icon} {message}"
         
-        keyboard = {
-            "inline_keyboard": [
+        # ⚡ **بناء الأزرار بناءً على نوع السيناريو**
+        keyboard = {"inline_keyboard": []}
+        
+        if scenario == "order":
+            # طلب جديد - جميع الأزرار
+            keyboard["inline_keyboard"] = [
                 [
                     {"text": "✅ تم التنفيذ", "callback_data": f"done:{contact_id}:{channel}"},
                     {"text": "❌ إلغاء", "callback_data": f"cancel:{contact_id}:{channel}"},
@@ -405,7 +409,42 @@ def send_to_telegram(message, contact_id, channel):
                     {"text": "💬 فتح المحادثة", "url": sendpulse_url}
                 ]
             ]
-        }
+        elif scenario == "delay":
+            # شكوى تأخر - زر فتح المحادثة وزر إرسال صورة
+            keyboard["inline_keyboard"] = [
+                [
+                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
+                ],
+                [
+                    {"text": "💬 فتح المحادثة", "url": sendpulse_url}
+                ]
+            ]
+        elif scenario == "photo":
+            # طلب صورة - زر إرسال صورة فقط
+            keyboard["inline_keyboard"] = [
+                [
+                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
+                ]
+            ]
+        else:
+            # سيناريو غير معروف - نستخدم الأزرار الافتراضية (order)
+            keyboard["inline_keyboard"] = [
+                [
+                    {"text": "✅ تم التنفيذ", "callback_data": f"done:{contact_id}:{channel}"},
+                    {"text": "❌ إلغاء", "callback_data": f"cancel:{contact_id}:{channel}"},
+                ],
+                [
+                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
+                ],
+                [
+                    {"text": "🔄 تحويل ناقص", "callback_data": f"transfer_minus:{contact_id}:{channel}"},
+                    {"text": "🔄 تحويل زائد", "callback_data": f"transfer_plus:{contact_id}:{channel}"}
+                ],
+                [
+                    {"text": "💬 فتح المحادثة", "url": sendpulse_url}
+                ]
+            ]
+        
         payload = {
             "chat_id": group_id,
             "text": message_with_channel,
@@ -415,7 +454,7 @@ def send_to_telegram(message, contact_id, channel):
         response = requests.post(url, json=payload, timeout=30)
         
         if response.status_code == 200:
-            logger.info(f"Message sent to Telegram group with contact_id: {contact_id} and channel: {channel}")
+            logger.info(f"Message sent to Telegram group with contact_id: {contact_id}, channel: {channel}, scenario: {scenario}")
             return True
         else:
             logger.error(f"Failed to send to Telegram: {response.status_code} - {response.text}")
@@ -425,51 +464,7 @@ def send_to_telegram(message, contact_id, channel):
         return False
 
 # =============================
-# 13. إرسال رسالة بسيطة إلى الجروب (زر واحد فقط - إرسال صورة)
-# =============================
-def send_simple_message_to_telegram(message, contact_id, channel):
-    try:
-        token = os.getenv("TELEGRAM_TOKEN")
-        group_id = os.getenv("GROUP_ID")
-
-        if not token or not group_id:
-            logger.error("TELEGRAM_TOKEN or GROUP_ID not set")
-            return False
-
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        
-        # إضافة رمز القناة إلى الرسالة
-        channel_icon = "📱" if channel == "messenger" else "✈️"
-        message_with_channel = f"{channel_icon} {message}"
-        
-        # زر واحد فقط - إرسال صورة
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"}
-                ]
-            ]
-        }
-        payload = {
-            "chat_id": group_id,
-            "text": message_with_channel,
-            "parse_mode": "HTML",
-            "reply_markup": keyboard
-        }
-        response = requests.post(url, json=payload, timeout=30)
-        
-        if response.status_code == 200:
-            logger.info(f"Simple message sent to Telegram group with contact_id: {contact_id} and channel: {channel}")
-            return True
-        else:
-            logger.error(f"Failed to send simple message to Telegram: {response.status_code} - {response.text}")
-            return False
-    except Exception as e:
-        logger.error(f"Error sending simple message to Telegram: {e}")
-        return False
-
-# =============================
-# 14. استقبال Webhook من SendPulse
+# 13. استقبال Webhook من SendPulse
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -596,7 +591,7 @@ def webhook():
             if much or platform:
                 line = ""
                 if much:
-                    line += f"الرصيــد {much}")
+                    line += f"الرصيــد {much}"
                 if platform:
                     if line:
                         line += f" $ {platform}"
@@ -631,103 +626,229 @@ def webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 15. إرسال رسالة إلى جروب تليجرام بناءً على السيناريو
+# 14. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
-def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
+@app.route("/telegram", methods=["POST"])
+def telegram_webhook():
     try:
         token = os.getenv("TELEGRAM_TOKEN")
-        group_id = os.getenv("GROUP_ID")
+        if not token:
+            logger.error("TELEGRAM_TOKEN not set")
+            return {"status": "error"}, 500
 
-        if not token or not group_id:
-            logger.error("TELEGRAM_TOKEN or GROUP_ID not set")
-            return False
+        data = request.get_json()
+        logger.info(f"Received Telegram update: {data}")
 
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        if not data:
+            return {"status": "ok"}, 200
+
+        # التعامل مع الأزرار
+        if "callback_query" in data:
+            callback = data["callback_query"]
+            query_id = callback["id"]
+            chat_id = callback["message"]["chat"]["id"]
+            message_id = callback["message"]["message_id"]
+            callback_data = callback["data"]
+
+            logger.info(f"Callback received: {callback_data} from chat {chat_id}")
+
+            # الرد على callback query لإزالة "Loading" من الزر
+            requests.post(
+                f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                json={"callback_query_id": query_id},
+                timeout=30
+            )
+
+            # تقسيم callback_data إلى أجزاء: action, contact_id, channel
+            parts = callback_data.split(':')
+            action = parts[0]
+            contact_id = parts[1]
+            channel = parts[2] if len(parts) > 2 else 'telegram'
+
+            # معالجة الإجراءات المختلفة
+            if action == "done":
+                send_to_client(contact_id, "✅ تم تنفيذ طلبك بنجاح", channel)
+                new_text = f"✅ تم تنفيذ الطلب بنجاح"
+                
+                # تعديل الرسالة الأصلية في الجروب
+                edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                edit_payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": new_text,
+                    "parse_mode": "HTML"
+                }
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
+                
+                if edit_response.status_code == 200:
+                    # مسح رسالة التأكيد بعد 5 ثواني
+                    delete_message_after_delay(chat_id, message_id, 5)
+                    logger.info(f"Success message scheduled for deletion: {message_id}")
+                else:
+                    logger.error(f"Failed to edit message: {edit_response.text}")
+                
+            elif action == "cancel":
+                send_to_client(contact_id, "❌ تم إلغاء طلبك.", channel)
+                new_text = f"❌ تم إلغاء الطلب"
+                
+                # تعديل الرسالة الأصلية في الجروب
+                edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                edit_payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": new_text,
+                    "parse_mode": "HTML"
+                }
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
+                
+                if edit_response.status_code == 200:
+                    # مسح رسالة التأكيد بعد 5 ثواني
+                    delete_message_after_delay(chat_id, message_id, 5)
+                    logger.info(f"Cancel message scheduled for deletion: {message_id}")
+                else:
+                    logger.error(f"Failed to edit message: {edit_response.text}")
+                
+            elif action == "sendpic":
+                # حفظ معرف الرسالة الحالية (التي تحتوي على طلب رفع الصورة)
+                pending_photos[str(chat_id)] = {
+                    'contact_id': contact_id,
+                    'channel': channel,
+                    'request_message_id': message_id  # حفظ معرف الرسالة التي تطلب الصورة
+                }
+                new_text = f"📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل"
+                
+                # تعديل الرسالة الأصلية في الجروب
+                edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                edit_payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": new_text,
+                    "parse_mode": "HTML"
+                }
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
+                
+                if edit_response.status_code != 200:
+                    logger.error(f"Failed to edit message: {edit_response.text}")
+
+            elif action in ["transfer_minus", "transfer_plus"]:
+                # تحديد نوع الرسالة بناءً على نوع التحويل
+                flow_type = action
+                flow_name = "تحويل ناقص" if flow_type == "transfer_minus" else "تحويل زائد"
+                
+                # تشغيل Flow المناسب
+                success = run_flow(contact_id, channel, flow_type)
+                if success:
+                    confirmation_message = f"🔄 تم {flow_name} للطلب بنجاح"
+                    send_to_client(contact_id, f"🔄 تم {flow_name} لطلبك وسيتم متابعته من قبل الفريق المختص", channel)
+                else:
+                    confirmation_message = f"❌ فشل {flow_name} للطلب"
+                
+                # إرسال رسالة تأكيد منفصلة
+                confirmation_response = requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": confirmation_message,
+                        "parse_mode": "HTML"
+                    },
+                    timeout=30
+                )
+                
+                if confirmation_response.status_code == 200:
+                    confirmation_data = confirmation_response.json()
+                    confirmation_message_id = confirmation_data['result']['message_id']
+                    
+                    # مسح رسالة التأكيد بعد 5 ثواني
+                    delete_message_after_delay(chat_id, confirmation_message_id, 5)
+                    logger.info(f"{flow_name} confirmation message scheduled for deletion: {confirmation_message_id}")
+                else:
+                    logger.error(f"Failed to send confirmation message: {confirmation_response.text}")
+
+        # التعامل مع الصور
+        elif "message" in data and "photo" in data["message"]:
+            message_data = data["message"]
+            chat_id = message_data["chat"]["id"]
+            message_id = message_data["message_id"]  # معرف رسالة الصورة المرسلة
+
+            logger.info(f"Photo received in chat {chat_id}")
+
+            if str(chat_id) in pending_photos:
+                pending_data = pending_photos.pop(str(chat_id))
+                contact_id = pending_data['contact_id']
+                channel = pending_data['channel']
+                request_message_id = pending_data.get('request_message_id')  # معرف رسالة طلب الصورة
+
+                # نأخذ أعلى دقة للصورة (آخر عنصر في المصفوفة)
+                photo = message_data["photo"][-1]
+                file_id = photo["file_id"]
+
+                logger.info(f"Processing photo for contact {contact_id} on channel {channel}")
+                logger.info(f"File ID: {file_id}")
+
+                # الحصول على معلومات الملف
+                file_info_url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
+                file_info_response = requests.get(file_info_url, timeout=30)
+                
+                if file_info_response.status_code == 200:
+                    file_info = file_info_response.json()
+                    if file_info.get("ok"):
+                        file_path = file_info["result"]["file_path"]
+                        file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+
+                        logger.info(f"Telegram file URL: {file_url}")
+                        
+                        # 1. تحميل الصورة وإنشاء رابط مؤقت
+                        temp_photo_url = download_and_create_temp_url(file_url, token, contact_id)
+                        
+                        if temp_photo_url:
+                            # 2. إرسال الصورة باستخدام الرابط المؤقت
+                            success = send_photo_to_client(contact_id, temp_photo_url, channel)
+                            
+                            if success:
+                                # 3. مسح الرسائل المطلوبة فور نجاح الإرسال
+                                
+                                # مسح رسالة طلب الصورة (إذا كانت موجودة)
+                                if request_message_id:
+                                    delete_telegram_message(chat_id, request_message_id)
+                                
+                                # مسح الصورة المرسلة في الجروب
+                                delete_telegram_message(chat_id, message_id)
+                                
+                                # 4. إرسال رسالة تأكيد في الجروب
+                                confirmation_response = requests.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={
+                                        "chat_id": chat_id,
+                                        "text": f"✅ تم إرسال الصورة للعميل بنجاح"
+                                    },
+                                    timeout=30
+                                )
+                                
+                                if confirmation_response.status_code == 200:
+                                    confirmation_data = confirmation_response.json()
+                                    confirmation_message_id = confirmation_data['result']['message_id']
+                                    
+                                    # مسح رسالة التأكيد بعد 5 ثواني
+                                    delete_message_after_delay(chat_id, confirmation_message_id, 5)
+                                
+                                logger.info(f"Photo sent successfully to client {contact_id} on channel {channel}")
+                            else:
+                                logger.error(f"Failed to send photo to client {contact_id} on channel {channel}")
+                                # إذا فشل إرسال الصورة، نرسل الرابط كبديل
+                                send_to_client(contact_id, f"📸 صورة من الدعم الفني: {temp_photo_url}", channel)
+                        else:
+                            logger.error("Failed to create temporary photo URL")
+                            # إذا فشل إنشاء الرابط المؤقت، نرسل الرابط الأصلي
+                            send_to_client(contact_id, f"📸 صورة من الدعم الفني: {file_url}", channel)
+
+        return {"status": "ok"}, 200
         
-        # إنشاء رابط SendPulse مع contact_id و channel
-        sendpulse_url = f"https://login.sendpulse.com/chatbots/chats?contact_id={contact_id}&channel={channel}"
-        
-        # إضافة رمز القناة إلى الرسالة
-        channel_icon = "📱" if channel == "messenger" else "✈️"
-        message_with_channel = f"{channel_icon} {message}"
-        
-        # ⚡ **بناء الأزرار بناءً على نوع السيناريو**
-        keyboard = {"inline_keyboard": []}
-        
-        if scenario == "order":
-            # طلب جديد - جميع الأزرار
-            keyboard["inline_keyboard"] = [
-                [
-                    {"text": "✅ تم التنفيذ", "callback_data": f"done:{contact_id}:{channel}"},
-                    {"text": "❌ إلغاء", "callback_data": f"cancel:{contact_id}:{channel}"},
-                ],
-                [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
-                ],
-                [
-                    {"text": "🔄 تحويل ناقص", "callback_data": f"transfer_minus:{contact_id}:{channel}"},
-                    {"text": "🔄 تحويل زائد", "callback_data": f"transfer_plus:{contact_id}:{channel}"}
-                ],
-                [
-                    {"text": "💬 فتح المحادثة", "url": sendpulse_url}
-                ]
-            ]
-        elif scenario == "delay":
-            # شكوى تأخر - زر فتح المحادثة وزر إرسال صورة
-            keyboard["inline_keyboard"] = [
-                [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
-                ],
-                [
-                    {"text": "💬 فتح المحادثة", "url": sendpulse_url}
-                ]
-            ]
-        elif scenario == "photo":
-            # طلب صورة - زر إرسال صورة فقط
-            keyboard["inline_keyboard"] = [
-                [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
-                ]
-            ]
-        else:
-            # سيناريو غير معروف - نستخدم الأزرار الافتراضية (order)
-            keyboard["inline_keyboard"] = [
-                [
-                    {"text": "✅ تم التنفيذ", "callback_data": f"done:{contact_id}:{channel}"},
-                    {"text": "❌ إلغاء", "callback_data": f"cancel:{contact_id}:{channel}"},
-                ],
-                [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
-                ],
-                [
-                    {"text": "🔄 تحويل ناقص", "callback_data": f"transfer_minus:{contact_id}:{channel}"},
-                    {"text": "🔄 تحويل زائد", "callback_data": f"transfer_plus:{contact_id}:{channel}"}
-                ],
-                [
-                    {"text": "💬 فتح المحادثة", "url": sendpulse_url}
-                ]
-            ]
-        
-        payload = {
-            "chat_id": group_id,
-            "text": message_with_channel,
-            "parse_mode": "HTML",
-            "reply_markup": keyboard
-        }
-        response = requests.post(url, json=payload, timeout=30)
-        
-        if response.status_code == 200:
-            logger.info(f"Message sent to Telegram group with contact_id: {contact_id}, channel: {channel}, scenario: {scenario}")
-            return True
-        else:
-            logger.error(f"Failed to send to Telegram: {response.status_code} - {response.text}")
-            return False
     except Exception as e:
-        logger.error(f"Error sending to Telegram: {e}")
-        return False
+        logger.error(f"Error in Telegram webhook: {e}")
+        return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 16. صفحات التحقق
+# 15. صفحات التحقق
 # =============================
 @app.route("/")
 def home():
@@ -742,7 +863,7 @@ def health():
     return {"status": "healthy", "timestamp": time.time()}, 200
 
 # =============================
-# 17. إعداد Webhook للتليجرام
+# 16. إعداد Webhook للتليجرام
 # =============================
 @app.route("/set_webhook")
 def set_webhook():
