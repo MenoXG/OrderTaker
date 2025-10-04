@@ -425,7 +425,7 @@ def send_to_telegram(message, contact_id, channel):
         return False
 
 # =============================
-# 13. استقبال Webhook من SendPulse
+# 13. استقبال Webhook من SendPulse (نسخة محسنة)
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -436,42 +436,107 @@ def webhook():
         if not data:
             return {"status": "error", "message": "No data received"}, 400
 
-        full_name = data.get("full_name", "")
-        username = data.get("username", "")
-        agent = data.get("Agent", "")
-        price_in = data.get("PriceIN", "")
-        much2 = data.get("much2", "")
-        paid_by = data.get("PaidBy", "")
-        instacontrol = data.get("InstaControl", "")
-        short_url = data.get("ShortUrl", "")
-        much = data.get("much", "")
-        platform = data.get("Platform", "")
-        redid = data.get("redid", "")
-        note = data.get("Note", "")
+        # الحقول المعروفة مسبقاً
+        known_fields = {
+            "full_name": "العميل {}",
+            "username": "تليجرام @{}", 
+            "Agent": "شفــت {}",
+            "PriceIN": "سعـر البيـع {}",
+            "much2": "المبلـغ {}",
+            "PaidBy": "جنيـه {}",
+            "CashControl": "رقم/اسم المحفظـة {}",
+            "ShortUrl": "الإيصـال {}",
+            "much": "الرصيــد {}",
+            "Platform": "$ {}",
+            "redid": "{}",
+            "Note": "{}"
+        }
+
+        # الحقول النظامية
+        system_fields = ["contact_id", "channel"]
+        
         contact_id = data.get("contact_id", "")
-        channel = data.get("channel", "telegram")  # القناة الافتراضية هي telegram
+        channel = data.get("channel", "telegram")
 
         if not contact_id:
             logger.error("No contact_id received in webhook")
             return {"status": "error", "message": "No contact_id"}, 400
 
-        message = f"""
-📩 <b>طلب جديد من {agent}</b>
+        # بناء الرسالة
+        message_parts = ["📩 <b>طلب جديد</b>"]
+        
+        # إضافة الحقول المعروفة
+        line1 = ""
+        if data.get("full_name"):
+            line1 += known_fields["full_name"].format(data["full_name"])
+        if data.get("username"):
+            if line1:
+                line1 += " " + known_fields["username"].format(data["username"])
+            else:
+                line1 += known_fields["username"].format(data["username"])
+        if line1:
+            message_parts.append(line1)
 
-👤 الاسم: {full_name}
-🔗 يوزر العميل: @{username}
-🆔 رقم ID: {redid}
-💳 المنصة: {platform}
-💰 المبلغ: {much}
-💵 مايعادلها: {price_in}
-📦 الكمية: {much2}
-💲 طريقة الدفع: {paid_by}
-👤 محول من: {instacontrol}
-📝 ملاحظات: {note}
-🔗 رابط الدفع: {short_url}
-📞 Contact ID: {contact_id}
-🌐 Channel: {channel}
-"""
+        line2 = ""
+        if data.get("Agent"):
+            line2 += known_fields["Agent"].format(data["Agent"])
+        if data.get("PriceIN"):
+            if line2:
+                line2 += " " + known_fields["PriceIN"].format(data["PriceIN"])
+            else:
+                line2 += known_fields["PriceIN"].format(data["PriceIN"])
+        if line2:
+            message_parts.append(line2)
+
+        line3 = ""
+        if data.get("much2"):
+            line3 += known_fields["much2"].format(data["much2"])
+        if data.get("PaidBy"):
+            if line3:
+                line3 += " " + known_fields["PaidBy"].format(data["PaidBy"])
+            else:
+                line3 += known_fields["PaidBy"].format(data["PaidBy"])
+        if line3:
+            message_parts.append(line3)
+
+        # الحقول المنفردة
+        if data.get("CashControl"):
+            message_parts.append(known_fields["CashControl"].format(data["CashControl"]))
+        if data.get("ShortUrl"):
+            message_parts.append(known_fields["ShortUrl"].format(data["ShortUrl"]))
+        
+        line6 = ""
+        if data.get("much"):
+            line6 += known_fields["much"].format(data["much"])
+        if data.get("Platform"):
+            if line6:
+                line6 += " " + known_fields["Platform"].format(data["Platform"])
+            else:
+                line6 += known_fields["Platform"].format(data["Platform"])
+        if line6:
+            message_parts.append(line6)
+
+        if data.get("redid"):
+            message_parts.append(known_fields["redid"].format(data["redid"]))
+        if data.get("Note"):
+            message_parts.append(known_fields["Note"].format(data["Note"]))
+
+        # 🔥 **إضافة جديدة: عرض المتغيرات الإضافية تلقائياً**
+        additional_fields = []
+        for key, value in data.items():
+            if key not in known_fields and key not in system_fields and value:
+                additional_fields.append(f"{key}: {value}")
+        
+        if additional_fields:
+            message_parts.append("\nمعلومات إضافية:")
+            message_parts.extend(additional_fields)
+
+        # إضافة معلومات النظام
+        message_parts.append(f"Contact ID: {contact_id}")
+        message_parts.append(f"Channel: {channel}")
+        
+        message = "\n".join(message_parts)
+
         success = send_to_telegram(message, contact_id, channel)
         
         if success:
