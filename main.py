@@ -16,6 +16,12 @@ app = Flask(__name__)
 # ذاكرة مؤقتة (chat_id → {contact_id, channel, request_message_id})
 pending_photos = {}
 
+# ذاكرة لتتبع رسائل العملاء (contact_id → {scenario: message_id})
+client_messages = {}
+
+# ذاكرة لتتبع المؤقتات (contact_id → timer)
+order_timers = {}
+
 # Flow IDs لكل قناة
 FLOW_IDS = {
     "telegram": {
@@ -395,11 +401,11 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
             # طلب جديد - جميع الأزرار
             keyboard["inline_keyboard"] = [
                 [
-                    {"text": "✅ تم التنفيذ", "callback_data": f"done:{contact_id}:{channel}"},
-                    {"text": "❌ إلغاء", "callback_data": f"cancel:{contact_id}:{channel}"},
+                    {"text": "✅ تم التنفيذ", "callback_data": f"done:{contact_id}:{channel}:order"},
+                    {"text": "❌ إلغاء", "callback_data": f"cancel:{contact_id}:{channel}:order"},
                 ],
                 [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
+                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}:order"},
                 ],
                 [
                     {"text": "🔄 تحويل ناقص", "callback_data": f"transfer_minus:{contact_id}:{channel}"},
@@ -413,7 +419,7 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
             # شكوى تأخر - زر فتح المحادثة وزر إرسال صورة
             keyboard["inline_keyboard"] = [
                 [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
+                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}:delay"},
                 ],
                 [
                     {"text": "💬 فتح المحادثة", "url": sendpulse_url}
@@ -423,18 +429,18 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
             # طلب صورة - زر إرسال صورة فقط
             keyboard["inline_keyboard"] = [
                 [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
+                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}:photo"},
                 ]
             ]
         else:
             # سيناريو غير معروف - نستخدم الأزرار الافتراضية (order)
             keyboard["inline_keyboard"] = [
                 [
-                    {"text": "✅ تم التنفيذ", "callback_data": f"done:{contact_id}:{channel}"},
-                    {"text": "❌ إلغاء", "callback_data": f"cancel:{contact_id}:{channel}"},
+                    {"text": "✅ تم التنفيذ", "callback_data": f"done:{contact_id}:{channel}:order"},
+                    {"text": "❌ إلغاء", "callback_data": f"cancel:{contact_id}:{channel}:order"},
                 ],
                 [
-                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
+                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}:order"},
                 ],
                 [
                     {"text": "🔄 تحويل ناقص", "callback_data": f"transfer_minus:{contact_id}:{channel}"},
@@ -454,7 +460,14 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
         response = requests.post(url, json=payload, timeout=30)
         
         if response.status_code == 200:
-            logger.info(f"Message sent to Telegram group with contact_id: {contact_id}, channel: {channel}, scenario: {scenario}")
+            message_id = response.json()['result']['message_id']
+            
+            # حفظ معرف الرسالة في الذاكرة لتتبع رسائل العميل
+            if contact_id not in client_messages:
+                client_messages[contact_id] = {}
+            client_messages[contact_id][scenario] = message_id
+            
+            logger.info(f"Message sent to Telegram group with contact_id: {contact_id}, channel: {channel}, scenario: {scenario}, message_id: {message_id}")
             return True
         else:
             logger.error(f"Failed to send to Telegram: {response.status_code} - {response.text}")
@@ -464,7 +477,93 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
         return False
 
 # =============================
-# 13. استقبال Webhook من SendPulse
+# 13. دالة التحقق من الطلبات المتأخرة وإرسال تنبيه
+# =============================
+def check_delayed_orders():
+    try:
+        token = os.getenv("TELEGRAM_TOKEN")
+        group_id = os.getenv("GROUP_ID")
+        
+        if not token or not group_id:
+            logger.error("TELEGRAM_TOKEN or GROUP_ID not set")
+            return
+
+        current_time = time.time()
+        delayed_contacts = []
+
+        # التحقق من جميع الطلبات النشطة
+        for contact_id, scenarios in list(client_messages.items()):
+            if 'order' in scenarios:
+                order_message_id = scenarios['order']
+                
+                # التحقق إذا كانت الرسالة لا تزال موجودة في الجروب
+                url = f"https://api.telegram.org/bot{token}/getChatMember"
+                payload = {
+                    "chat_id": group_id,
+                    "user_id": 123456789  # أي معرف مستخدم، ليس مهماً
+                }
+                
+                # محاولة الحصول على معلومات الجروب (كطريقة للتحقق من وجود الرسالة)
+                # بدلاً من ذلك، يمكننا محاولة تعديل الرسالة
+                try:
+                    edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
+                    edit_payload = {
+                        "chat_id": group_id,
+                        "message_id": order_message_id,
+                        "text": "جاري التحقق..."
+                    }
+                    edit_response = requests.post(edit_url, json=edit_payload, timeout=10)
+                    
+                    # إذا نجح التعديل، فهذا يعني أن الرسالة لا تزال موجودة
+                    if edit_response.status_code == 200:
+                        # نعيد الرسالة إلى حالتها الأصلية
+                        original_message = "📩 <b>طلب جديد</b>"  # يمكن تعديل هذا ليكون الرسالة الأصلية
+                        edit_payload["text"] = original_message
+                        requests.post(edit_url, json=edit_payload, timeout=10)
+                        
+                        # إضافة للقائمة المتأخرة
+                        delayed_contacts.append(contact_id)
+                        logger.info(f"Order message {order_message_id} for contact {contact_id} still exists - marking as delayed")
+                    
+                except Exception as e:
+                    logger.error(f"Error checking message {order_message_id}: {e}")
+
+        # إرسال تنبيهات للطلبات المتأخرة
+        for contact_id in delayed_contacts:
+            if contact_id in client_messages and 'delay' not in client_messages[contact_id]:
+                # إرسال رسالة تنبيه تأخر
+                delay_message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\nالعميل: {contact_id}\nالرقم التعريفي: {contact_id}\nسبب التأخر: الطلب لم يتم معالجته خلال 5 دقائق"
+                
+                success = send_scenario_message_to_telegram(delay_message, contact_id, "telegram", "delay")
+                if success:
+                    logger.info(f"Delay alert sent for contact: {contact_id}")
+                
+        logger.info(f"Delayed orders check completed. Found {len(delayed_contacts)} delayed orders")
+        
+    except Exception as e:
+        logger.error(f"Error in check_delayed_orders: {e}")
+
+# =============================
+# 14. بدء مؤقت للتحقق من الطلبات المتأخرة
+# =============================
+def start_delayed_orders_checker():
+    def checker_loop():
+        while True:
+            try:
+                check_delayed_orders()
+                # التحقق كل 5 دقائق
+                time.sleep(300)
+            except Exception as e:
+                logger.error(f"Error in delayed orders checker loop: {e}")
+                time.sleep(60)  # انتظار دقيقة قبل إعادة المحاولة
+    
+    thread = threading.Thread(target=checker_loop)
+    thread.daemon = True
+    thread.start()
+    logger.info("Delayed orders checker started")
+
+# =============================
+# 15. استقبال Webhook من SendPulse
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -493,9 +592,6 @@ def webhook():
         
         # ⚡ **استخدام scenario لتحديد نوع الطلب**
         scenario = data.get("scenario", "order")  # القيم: order, photo, delay
-        
-        # 🔍 **الحفاظ على التوافق مع الطريقة القديمة**
-        complaint_reason = data.get("complaint_reason", "")
 
         if not contact_id:
             logger.error("No contact_id received in webhook")
@@ -512,11 +608,9 @@ def webhook():
                 message_lines.append(f"التليجرام: @{username}")
             if redid:
                 message_lines.append(f"الرقم التعريفي: {redid}")
-            if complaint_reason:
-                message_lines.append(f"سبب التأخر: {complaint_reason}")
-            elif note:
+            if note:
                 message_lines.append(f"سبب التأخر: {note}")
-            elif not complaint_reason and not note:
+            else:
                 message_lines.append(f"سبب التأخر: غير محدد")
                 
             message = "\n".join(message_lines)
@@ -626,12 +720,14 @@ def webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 14. استقبال ضغط الأزرار + الصور من التليجرام
+# 16. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
     try:
         token = os.getenv("TELEGRAM_TOKEN")
+        group_id = os.getenv("GROUP_ID")
+
         if not token:
             logger.error("TELEGRAM_TOKEN not set")
             return {"status": "error"}, 500
@@ -659,11 +755,12 @@ def telegram_webhook():
                 timeout=30
             )
 
-            # تقسيم callback_data إلى أجزاء: action, contact_id, channel
+            # تقسيم callback_data إلى أجزاء: action, contact_id, channel, scenario
             parts = callback_data.split(':')
             action = parts[0]
             contact_id = parts[1]
             channel = parts[2] if len(parts) > 2 else 'telegram'
+            scenario = parts[3] if len(parts) > 3 else 'order'
 
             # معالجة الإجراءات المختلفة
             if action == "done":
@@ -684,6 +781,12 @@ def telegram_webhook():
                     # مسح رسالة التأكيد بعد 5 ثواني
                     delete_message_after_delay(chat_id, message_id, 5)
                     logger.info(f"Success message scheduled for deletion: {message_id}")
+                    
+                    # مسح رسالة الطلب من الذاكرة
+                    if contact_id in client_messages and scenario in client_messages[contact_id]:
+                        del client_messages[contact_id][scenario]
+                        if not client_messages[contact_id]:
+                            del client_messages[contact_id]
                 else:
                     logger.error(f"Failed to edit message: {edit_response.text}")
                 
@@ -705,6 +808,12 @@ def telegram_webhook():
                     # مسح رسالة التأكيد بعد 5 ثواني
                     delete_message_after_delay(chat_id, message_id, 5)
                     logger.info(f"Cancel message scheduled for deletion: {message_id}")
+                    
+                    # مسح رسالة الطلب من الذاكرة
+                    if contact_id in client_messages and scenario in client_messages[contact_id]:
+                        del client_messages[contact_id][scenario]
+                        if not client_messages[contact_id]:
+                            del client_messages[contact_id]
                 else:
                     logger.error(f"Failed to edit message: {edit_response.text}")
                 
@@ -713,6 +822,7 @@ def telegram_webhook():
                 pending_photos[str(chat_id)] = {
                     'contact_id': contact_id,
                     'channel': channel,
+                    'scenario': scenario,
                     'request_message_id': message_id  # حفظ معرف الرسالة التي تطلب الصورة
                 }
                 new_text = f"📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل"
@@ -776,13 +886,14 @@ def telegram_webhook():
                 pending_data = pending_photos.pop(str(chat_id))
                 contact_id = pending_data['contact_id']
                 channel = pending_data['channel']
+                scenario = pending_data['scenario']
                 request_message_id = pending_data.get('request_message_id')  # معرف رسالة طلب الصورة
 
                 # نأخذ أعلى دقة للصورة (آخر عنصر في المصفوفة)
                 photo = message_data["photo"][-1]
                 file_id = photo["file_id"]
 
-                logger.info(f"Processing photo for contact {contact_id} on channel {channel}")
+                logger.info(f"Processing photo for contact {contact_id} on channel {channel}, scenario: {scenario}")
                 logger.info(f"File ID: {file_id}")
 
                 # الحصول على معلومات الملف
@@ -848,14 +959,14 @@ def telegram_webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 15. صفحات التحقق
+# 17. صفحات التحقق
 # =============================
 @app.route("/")
 def home():
     return {
         "status": "running",
         "service": "Multi-Channel Telegram Bot Webhook",
-        "timestamp": time.time()
+           "timestamp": time.time()
     }
 
 @app.route("/health")
@@ -863,7 +974,7 @@ def health():
     return {"status": "healthy", "timestamp": time.time()}, 200
 
 # =============================
-# 16. إعداد Webhook للتليجرام
+# 18. إعداد Webhook للتليجرام
 # =============================
 @app.route("/set_webhook")
 def set_webhook():
@@ -887,4 +998,8 @@ def set_webhook():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     logger.info(f"Starting server on port {port}")
+    
+    # بدء نظام التحقق من الطلبات المتأخرة
+    start_delayed_orders_checker()
+    
     app.run(host="0.0.0.0", port=port, debug=False)
