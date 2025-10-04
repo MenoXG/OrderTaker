@@ -456,72 +456,78 @@ def webhook():
             logger.error("No contact_id received in webhook")
             return {"status": "error", "message": "No contact_id"}, 400
 
-        # بناء الرسالة بنفس تنسيق SendPulse Flow ولكن بشكل ديناميكي
-        message_lines = []
+        # بناء الرسالة بنفس التنسيق المطلوب مع عرض فقط الحقول التي تحتوي على قيم
+        message_parts = ["📩 <b>طلب جديد</b>"]
         
-        # إضافة الحقول التي تحتوي على قيم فقط بنفس التنسيق المطلوب
-        if full_name or username:
-            line = ""
-            if full_name:
-                line += f"العميل {full_name}"
-            if username:
-                if line:
-                    line += f" تليجرام @{username}"
-                else:
-                    line += f"تليجرام @{username}"
-            message_lines.append(line)
-        
-        if agent or price_in:
-            line = ""
-            if agent:
-                line += f"شفــت {agent}"
-            if price_in:
-                if line:
-                    line += f" سعـر البيـع {price_in}"
-                else:
-                    line += f"سعـر البيـع {price_in}"
-            message_lines.append(line)
-        
-        if much2 or paid_by:
-            line = ""
-            if much2:
-                line += f"المبلـغ {much2}"
-            if paid_by:
-                if line:
-                    line += f" جنيـه {paid_by}"
-                else:
-                    line += f"جنيـه {paid_by}"
-            message_lines.append(line)
-        
+        # السطر 1: العميل و تليجرام
+        line1 = ""
+        if full_name:
+            line1 += f"العميل {full_name}"
+        if username:
+            if line1:  # إذا كان هناك بالفعل نص في السطر
+                line1 += f" تليجرام @{username}"
+            else:
+                line1 += f"تليجرام @{username}"
+        if line1:
+            message_parts.append(line1)
+
+        # السطر 2: شفت وسعر البيع
+        line2 = ""
+        if agent:
+            line2 += f"شفــت {agent}"
+        if price_in:
+            if line2:
+                line2 += f" سعـر البيـع {price_in}"
+            else:
+                line2 += f"سعـر البيـع {price_in}"
+        if line2:
+            message_parts.append(line2)
+
+        # السطر 3: المبلغ وجنيه
+        line3 = ""
+        if much2:
+            line3 += f"المبلـغ {much2}"
+        if paid_by:
+            if line3:
+                line3 += f" جنيـه {paid_by}"
+            else:
+                line3 += f"جنيـه {paid_by}"
+        if line3:
+            message_parts.append(line3)
+
+        # السطر 4: رقم/اسم المحفظة
         if cash_control:
-            message_lines.append(f"رقم/اسم المحفظـة {cash_control}")
-        
+            message_parts.append(f"رقم/اسم المحفظـة {cash_control}")
+
+        # السطر 5: الإيصال
         if short_url:
-            message_lines.append(f"الإيصـال {short_url}")
-        
-        if much or platform:
-            line = ""
-            if much:
-                line += f"الرصيــد {much}"
-            if platform:
-                if line:
-                    line += f" $ {platform}"
-                else:
-                    line += f"$ {platform}"
-            message_lines.append(line)
-        
+            message_parts.append(f"الإيصـال {short_url}")
+
+        # السطر 6: الرصيد والعملة
+        line6 = ""
+        if much:
+            line6 += f"الرصيــد {much}"
+        if platform:
+            if line6:
+                line6 += f" $ {platform}"
+            else:
+                line6 += f"$ {platform}"
+        if line6:
+            message_parts.append(line6)
+
+        # السطر 7: redid
         if redid:
-            message_lines.append(f"{redid}")
-        
+            message_parts.append(f"{redid}")
+
+        # السطر 8: note
         if note:
-            message_lines.append(f"{note}")
+            message_parts.append(f"{note}")
+
+        # ⚡ **إخفاء contact_id و channel من العرض**
+        # ملاحظة: contact_id و channel لا يظهران في الرسالة
         
-        # إضافة عنوان الرسالة في الأعلى
-        if message_lines:
-            message_lines.insert(0, "📩 <b>طلب جديد</b>")
-        
-        # دمج كل الأسطر في رسالة واحدة
-        message = "\n".join(message_lines) if message_lines else "📩 <b>طلب جديد</b>"
+        # دمج كل الأجزاء في رسالة واحدة
+        message = "\n".join(message_parts)
 
         success = send_to_telegram(message, contact_id, channel)
         
@@ -577,6 +583,7 @@ def telegram_webhook():
             # معالجة الإجراءات المختلفة
             if action == "done":
                 send_to_client(contact_id, "✅ تم تنفيذ طلبك بنجاح", channel)
+                # ⚡ **تحديث: إخفاء contact_id و channel من رسالة التأكيد**
                 new_text = f"✅ تم تنفيذ الطلب بنجاح"
                 
                 # تعديل الرسالة الأصلية في الجروب
@@ -598,6 +605,7 @@ def telegram_webhook():
                 
             elif action == "cancel":
                 send_to_client(contact_id, "❌ تم إلغاء طلبك.", channel)
+                # ⚡ **تحديث: إخفاء contact_id و channel من رسالة التأكيد**
                 new_text = f"❌ تم إلغاء الطلب"
                 
                 # تعديل الرسالة الأصلية في الجروب
@@ -624,6 +632,7 @@ def telegram_webhook():
                     'channel': channel,
                     'request_message_id': message_id  # حفظ معرف الرسالة التي تطلب الصورة
                 }
+                # ⚡ **تحديث: إخفاء contact_id و channel من رسالة طلب الصورة**
                 new_text = f"📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل"
                 
                 # تعديل الرسالة الأصلية في الجروب
@@ -647,6 +656,7 @@ def telegram_webhook():
                 # تشغيل Flow المناسب
                 success = run_flow(contact_id, channel, flow_type)
                 if success:
+                    # ⚡ **تحديث: إخفاء contact_id و channel من رسالة التأكيد**
                     confirmation_message = f"🔄 تم {flow_name} للطلب بنجاح"
                     send_to_client(contact_id, f"🔄 تم {flow_name} لطلبك وسيتم متابعته من قبل الفريق المختص", channel)
                 else:
@@ -724,6 +734,7 @@ def telegram_webhook():
                                 delete_telegram_message(chat_id, message_id)
                                 
                                 # 4. إرسال رسالة تأكيد في الجروب
+                                # ⚡ **تحديث: إخفاء contact_id و channel من رسالة التأكيد**
                                 confirmation_response = requests.post(
                                     f"https://api.telegram.org/bot{token}/sendMessage",
                                     json={
