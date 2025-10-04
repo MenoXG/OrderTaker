@@ -7,6 +7,7 @@ import tempfile
 import shutil
 import threading
 from datetime import datetime, timedelta
+import re
 
 # إعداد logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -376,55 +377,72 @@ def send_photo_to_client(contact_id, photo_url, channel):
         return False
 
 # =============================
-# 12. دالة تنسيق بيانات الطلب
+# 12. دالة تنسيق بيانات الطلب - محسنة
 # =============================
 def format_order_data(order_text):
     """
     تنسيق بيانات الطلب لتكون أكثر تنظيماً ووضوحاً
     """
     try:
-        # تقسيم النص إلى أسطر
-        lines = order_text.split('\n')
+        # إذا كان النص فارغاً
+        if not order_text or not order_text.strip():
+            return order_text
+            
+        # إذا كان النص يحتوي على رموز تعبيرية، نعتقد أنه منظم مسبقاً
+        if any(emoji in order_text for emoji in ['👤', '📱', '🛒', '💰', '💵', '💳', '🏦', '🧾', '💎', '💻', '🆔', '📝']):
+            return order_text
+
         formatted_lines = []
+        
+        # البحث عن الأنماط الشائعة في البيانات
+        patterns = {
+            '👤': [r'العميل\s*(.+)', r'اسم\s*(.+)', r'Name\s*(.+)'],
+            '📱': [r'تليجرام\s*(.+)', r'تيليجرام\s*(.+)', r'@(\w+)', r'username\s*(.+)'],
+            '🛒': [r'شفــت\s*(.+)', r'منتج\s*(.+)', r'Product\s*(.+)', r'Agent\s*(.+)'],
+            '💰': [r'سعـر البيـع\s*(.+)', r'سعر\s*(.+)', r'Price\s*(.+)', r'PriceIN\s*(.+)'],
+            '💵': [r'المبلـغ\s*(.+)', r'مبلغ\s*(.+)', r'Amount\s*(.+)', r'much2\s*(.+)'],
+            '💳': [r'جنيـه\s*(.+)', r'دفع\s*(.+)', r'Payment\s*(.+)', r'PaidBy\s*(.+)'],
+            '🏦': [r'المحفظـة\s*(.+)', r'محفظة\s*(.+)', r'Wallet\s*(.+)', r'CashControl\s*(.+)'],
+            '🧾': [r'الإيصـال\s*(.+)', r'إيصال\s*(.+)', r'Receipt\s*(.+)', r'ShortUrl\s*(.+)'],
+            '💎': [r'الرصيــد\s*(.+)', r'رصيد\s*(.+)', r'Balance\s*(.+)', r'much\s*(.+)'],
+            '💻': [r'منصة\s*(.+)', r'Platform\s*(.+)', r'\$\s*(.+)'],
+            '🆔': [r'ORDER\s*(.+)', r'رقم\s*(.+)', r'ID\s*(.+)', r'redid\s*(.+)'],
+            '📝': [r'ملاحظ\s*(.+)', r'Note\s*(.+)', r'ملاحظة\s*(.+)']
+        }
+        
+        # تقسيم النص إلى أسطر إذا كان يحتوي على فواصل
+        lines = order_text.split('\n')
+        if len(lines) == 1:
+            # إذا كان سطر واحد، حاول تقسيمه بفواصل أخرى
+            lines = re.split(r'[،,;|]', order_text)
         
         for line in lines:
             line = line.strip()
             if not line:
                 continue
                 
-            # الكشف عن نوع البيانات وتنسيقها
-            if any(keyword in line for keyword in ['العميل', 'اسم', 'Name', 'name', 'client']):
-                formatted_lines.append(f"👤 {line}")
-            elif any(keyword in line for keyword in ['تليجرام', 'تيليجرام', 'telegram', 'username', '@']):
-                formatted_lines.append(f"📱 {line}")
-            elif any(keyword in line for keyword in ['شفــت', 'منتج', 'Product', 'product', 'Agent', 'agent']):
-                formatted_lines.append(f"🛒 {line}")
-            elif any(keyword in line for keyword in ['سعـر البيـع', 'سعر', 'Price', 'price', 'PriceIN']):
-                formatted_lines.append(f"💰 {line}")
-            elif any(keyword in line for keyword in ['المبلـغ', 'مبلغ', 'Amount', 'amount', 'much2']):
-                formatted_lines.append(f"💵 {line}")
-            elif any(keyword in line for keyword in ['جنيـه', 'دفع', 'Payment', 'payment', 'PaidBy']):
-                formatted_lines.append(f"💳 {line}")
-            elif any(keyword in line for keyword in ['المحفظـة', 'محفظة', 'Wallet', 'wallet', 'CashControl']):
-                formatted_lines.append(f"🏦 {line}")
-            elif any(keyword in line for keyword in ['الإيصـال', 'إيصال', 'Receipt', 'receipt', 'ShortUrl']):
-                formatted_lines.append(f"🧾 {line}")
-            elif any(keyword in line for keyword in ['الرصيــد', 'رصيد', 'Balance', 'balance', 'much']):
-                formatted_lines.append(f"💎 {line}")
-            elif any(keyword in line for keyword in ['$', 'منصة', 'Platform', 'platform']):
-                formatted_lines.append(f"💻 {line}")
-            elif any(keyword in line for keyword in ['ORDER', 'رقم', 'ID', 'id', 'redid']):
-                formatted_lines.append(f"🆔 {line}")
-            elif any(keyword in line for keyword in ['ملاحظ', 'Note', 'note', 'ملاحظة', 'notes']):
-                formatted_lines.append(f"📝 {line}")
-            else:
+            matched = False
+            # البحث عن أنماط في السطر
+            for emoji, pattern_list in patterns.items():
+                for pattern in pattern_list:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        value = match.group(1).strip()
+                        formatted_lines.append(f"{emoji} {value}")
+                        matched = True
+                        break
+                if matched:
+                    break
+            
+            # إذا لم يتم العثور على نمط، أضف السطر كما هو مع رمز عام
+            if not matched:
                 formatted_lines.append(f"📌 {line}")
         
         return "\n".join(formatted_lines)
         
     except Exception as e:
         logger.error(f"Error formatting order data: {e}")
-        return order_text  # إرجاع النص الأصلي في حالة الخطأ
+        return order_text
 
 # =============================
 # 13. إرسال رسالة إلى جروب تليجرام بناءً على السيناريو
@@ -518,27 +536,31 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
             # حفظ معرف الرسالة في الذاكرة لتتبع رسائل العميل مع الوقت
             if contact_id not in client_messages:
                 client_messages[contact_id] = {}
+            
             client_messages[contact_id][scenario] = {
                 'message_id': message_id,
                 'timestamp': datetime.now(),
                 'channel': channel
             }
             
-            logger.info(f"Message sent to Telegram group with contact_id: {contact_id}, channel: {channel}, scenario: {scenario}, message_id: {message_id}")
+            logger.info(f"✅ Message sent and stored: contact_id={contact_id}, scenario={scenario}, message_id={message_id}")
+            logger.info(f"📊 Current client_messages count: {len(client_messages)}")
+            
             return True
         else:
-            logger.error(f"Failed to send to Telegram: {response.status_code}")
+            logger.error(f"❌ Failed to send to Telegram: {response.status_code}")
             return False
     except Exception as e:
-        logger.error(f"Error sending to Telegram: {e}")
+        logger.error(f"❌ Error sending to Telegram: {e}")
         return False
 
 # =============================
-# 14. دالة التحقق من الطلبات المتأخرة وإرسال تنبيه
+# 14. دالة التحقق من الطلبات المتأخرة وإرسال تنبيه - محسنة
 # =============================
 def check_delayed_orders():
     try:
         logger.info("🔍 Starting delayed orders check...")
+        logger.info(f"📊 Total orders in memory: {len(client_messages)}")
         
         current_time = datetime.now()
         delayed_contacts = []
@@ -550,12 +572,14 @@ def check_delayed_orders():
                 order_time = order_data['timestamp']
                 time_diff = current_time - order_time
                 
+                logger.info(f"⏰ Checking order {contact_id}: {time_diff.total_seconds():.0f} seconds passed")
+                
                 # إذا مرت أكثر من 5 دقائق على الطلب
                 if time_diff.total_seconds() > 300:  # 300 ثانية = 5 دقائق
                     # التحقق إذا لم يكن هناك تنبيه تأخر مسبق
                     if 'delay' not in scenarios:
                         delayed_contacts.append(contact_id)
-                        logger.info(f"🕒 Order for contact {contact_id} is delayed - {time_diff.total_seconds():.0f} seconds passed")
+                        logger.info(f"🚨 Order for contact {contact_id} is DELAYED - {time_diff.total_seconds():.0f} seconds passed")
 
         # إرسال تنبيهات للطلبات المتأخرة
         for contact_id in delayed_contacts:
@@ -573,9 +597,11 @@ def check_delayed_orders():
                 # إرسال رسالة تنبيه التأخر
                 success = send_scenario_message_to_telegram(delay_message, contact_id, channel, "delay")
                 if success:
-                    logger.info(f"✅ Delay alert sent for contact: {contact_id}")
+                    logger.info(f"✅ Delay alert sent successfully for contact: {contact_id}")
                 else:
                     logger.error(f"❌ Failed to send delay alert for contact: {contact_id}")
+            else:
+                logger.info(f"ℹ️ Delay alert already sent for contact: {contact_id}")
                 
         logger.info(f"📊 Delayed orders check completed. Found {len(delayed_contacts)} delayed orders")
         
@@ -583,15 +609,18 @@ def check_delayed_orders():
         logger.error(f"❌ Error in check_delayed_orders: {e}")
 
 # =============================
-# 15. بدء مؤقت للتحقق من الطلبات المتأخرة
+# 15. بدء مؤقت للتحقق من الطلبات المتأخرة - محسنة
 # =============================
 def start_delayed_orders_checker():
     def checker_loop():
         logger.info("🔄 Starting delayed orders checker loop...")
+        check_count = 0
         while True:
             try:
+                check_count += 1
+                logger.info(f"🔍 Check #{check_count} at {datetime.now().strftime('%H:%M:%S')}")
                 check_delayed_orders()
-                # التحقق كل دقيقة (يمكن تغييرها حسب الحاجة)
+                # التحقق كل دقيقة
                 time.sleep(60)
             except Exception as e:
                 logger.error(f"❌ Error in delayed orders checker loop: {e}")
@@ -603,7 +632,7 @@ def start_delayed_orders_checker():
     logger.info("✅ Delayed orders checker started successfully")
 
 # =============================
-# 16. استقبال Webhook من SendPulse
+# 16. استقبال Webhook من SendPulse - محسنة
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -641,16 +670,15 @@ def webhook():
             logger.error("❌ No contact_id received in webhook")
             return {"status": "error", "message": "No contact_id"}, 400
 
+        logger.info(f"📝 Processing scenario: {scenario}, contact_id: {contact_id}")
+
         # ⚡ **معالجة أنواع الطلبات بناءً على scenario**
         if scenario == "delay":
             # بناء رسالة شكوى التأخر
             if neworder:
                 # استخدام neworder إذا كان متوفراً
-                if any(keyword in neworder for keyword in ['👤', '📱', '🛒', '💰', '💵', '💳', '🏦', '🧾', '💎', '💻', '🆔', '📝']):
-                    message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n{neworder}"
-                else:
-                    formatted_order = format_order_data(neworder)
-                    message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n{formatted_order}"
+                formatted_order = format_order_data(neworder)
+                message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n{formatted_order}"
             else:
                 # استخدام النظام القديم
                 message_lines = ["🚨 <b>تنبيه تأخر في التنفيذ</b>"]
@@ -678,11 +706,8 @@ def webhook():
             # بناء رسالة طلب الصورة الإضافية
             if neworder:
                 # استخدام neworder إذا كان متوفراً
-                if any(keyword in neworder for keyword in ['👤', '📱', '🛒', '💰', '💵', '💳', '🏦', '🧾', '💎', '💻', '🆔', '📝']):
-                    message = f"📸 <b>طلب صورة إضافية من العميل</b>\n{neworder}"
-                else:
-                    formatted_order = format_order_data(neworder)
-                    message = f"📸 <b>طلب صورة إضافية من العميل</b>\n{formatted_order}"
+                formatted_order = format_order_data(neworder)
+                message = f"📸 <b>طلب صورة إضافية من العميل</b>\n{formatted_order}"
             else:
                 # استخدام النظام القديم
                 message_lines = ["📸 <b>طلب صورة إضافية من العميل</b>"]
@@ -706,11 +731,10 @@ def webhook():
             # بناء رسالة الطلب الجديد
             if neworder:
                 # استخدام neworder إذا كان متوفراً
-                if any(keyword in neworder for keyword in ['👤', '📱', '🛒', '💰', '💵', '💳', '🏦', '🧾', '💎', '💻', '🆔', '📝']):
-                    message = f"📩 <b>طلب جديد</b>\n{neworder}"
-                else:
-                    formatted_order = format_order_data(neworder)
-                    message = f"📩 <b>طلب جديد</b>\n{formatted_order}"
+                logger.info(f"📝 Using neworder data: {neworder[:100]}...")
+                formatted_order = format_order_data(neworder)
+                message = f"📩 <b>طلب جديد</b>\n{formatted_order}"
+                logger.info(f"📝 Formatted order: {formatted_order[:100]}...")
             else:
                 # استخدام النظام القديم
                 message_lines = []
@@ -952,7 +976,7 @@ def telegram_webhook():
         # التعامل مع الصور
         elif "message" in data and "photo" in data["message"]:
             message_data = data["message"]
-            chat_id = message_data["chat"]["id"]
+              chat_id = message_data["chat"]["id"]
             message_id = message_data["message_id"]  # معرف رسالة الصورة المرسلة
 
             logger.info(f"🖼️ Photo received in chat {chat_id}")
@@ -1031,7 +1055,8 @@ def telegram_webhook():
     except Exception as e:
         logger.error(f"❌ Error in Telegram webhook: {e}")
         return {"status": "error", "message": str(e)}, 500
-            # =============================
+
+# =============================
 # 18. صفحات التحقق
 # =============================
 @app.route("/")
@@ -1075,22 +1100,26 @@ def set_webhook():
 def active_orders():
     try:
         orders_info = []
+        current_time = datetime.now()
+        
         for contact_id, scenarios in client_messages.items():
             if 'order' in scenarios:
                 order_data = scenarios['order']
-                time_diff = datetime.now() - order_data['timestamp']
+                time_diff = current_time - order_data['timestamp']
                 orders_info.append({
                     'contact_id': contact_id,
                     'message_id': order_data['message_id'],
                     'channel': order_data.get('channel', 'telegram'),
                     'timestamp': order_data['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
                     'minutes_passed': int(time_diff.total_seconds() / 60),
-                    'is_delayed': time_diff.total_seconds() > 300
+                    'is_delayed': time_diff.total_seconds() > 300,
+                    'has_delay_alert': 'delay' in scenarios
                 })
         
         return {
             "status": "ok",
             "active_orders_count": len(orders_info),
+            "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S'),
             "orders": orders_info
         }
     except Exception as e:
@@ -1098,7 +1127,19 @@ def active_orders():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 21. بدء التطبيق
+# 21. صفحة لتفعيل التنبيهات يدوياً
+# =============================
+@app.route("/trigger_check")
+def trigger_check():
+    try:
+        check_delayed_orders()
+        return {"status": "ok", "message": "Delayed orders check triggered manually"}
+    except Exception as e:
+        logger.error(f"❌ Error in trigger_check: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
+# =============================
+# 22. بدء التطبيق
 # =============================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
@@ -1109,3 +1150,4 @@ if __name__ == "__main__":
     logger.info("✅ Delayed orders checker initialized")
     
     app.run(host="0.0.0.0", port=port, debug=False)
+         
