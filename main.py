@@ -18,8 +18,14 @@ pending_photos = {}
 
 # Flow IDs لكل قناة
 FLOW_IDS = {
-    "telegram": "6856d410b7a060fae70c2ea6",
-    "messenger": "7c354af9-9df2-4e1d-8cac-768c4ac9f472"
+    "telegram": {
+        "transfer_minus": "6856d410b7a060fae70c2ea6",
+        "transfer_plus": "68572471a3978f2f6609937f"
+    },
+    "messenger": {
+        "transfer_minus": "7c354af9-9df2-4e1d-8cac-768c4ac9f472",
+        "transfer_plus": "23fd4175-86c0-4882-bbe2-906f75c77a6d"
+    }
 }
 
 # =============================
@@ -85,7 +91,7 @@ def get_sendpulse_token():
 # =============================
 # 4. تشغيل Flow في SendPulse
 # =============================
-def run_flow(contact_id, channel):
+def run_flow(contact_id, channel, flow_type):
     try:
         token = get_sendpulse_token()
         if not token:
@@ -101,10 +107,10 @@ def run_flow(contact_id, channel):
             logger.error(f"Unknown channel for flow: {channel}")
             return False
 
-        # الحصول على الـ flow_id المناسب للقناة
-        flow_id = FLOW_IDS.get(channel)
+        # الحصول على الـ flow_id المناسب للقناة ونوع التحويل
+        flow_id = FLOW_IDS.get(channel, {}).get(flow_type)
         if not flow_id:
-            logger.error(f"No flow_id defined for channel: {channel}")
+            logger.error(f"No flow_id defined for channel: {channel} and flow type: {flow_type}")
             return False
 
         payload = {
@@ -117,7 +123,7 @@ def run_flow(contact_id, channel):
 
         headers = {"Authorization": f"Bearer {token}"}
         
-        logger.info(f"Running flow for contact {contact_id} on channel {channel}")
+        logger.info(f"Running {flow_type} flow for contact {contact_id} on channel {channel}")
         logger.info(f"Flow ID: {flow_id}")
         
         response = requests.post(url, json=payload, headers=headers, timeout=30)
@@ -126,10 +132,10 @@ def run_flow(contact_id, channel):
         logger.info(f"SendPulse Flow response text: {response.text}")
         
         if response.status_code == 200:
-            logger.info(f"Flow started successfully for client {contact_id} on channel {channel}")
+            logger.info(f"{flow_type} flow started successfully for client {contact_id} on channel {channel}")
             return True
         else:
-            logger.error(f"Failed to start flow for {contact_id}: {response.status_code} - {response.text}")
+            logger.error(f"Failed to start {flow_type} flow for {contact_id}: {response.status_code} - {response.text}")
             return False
     except Exception as e:
         logger.error(f"Error running flow: {e}")
@@ -390,7 +396,10 @@ def send_to_telegram(message, contact_id, channel):
                 ],
                 [
                     {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"},
-                    {"text": "🔄 تحويل ناقص", "callback_data": f"transfer:{contact_id}:{channel}"}
+                ],
+                [
+                    {"text": "🔄 تحويل ناقص", "callback_data": f"transfer_minus:{contact_id}:{channel}"},
+                    {"text": "🔄 تحويل زائد", "callback_data": f"transfer_plus:{contact_id}:{channel}"}
                 ],
                 [
                     {"text": "💬 فتح المحادثة", "url": sendpulse_url}
@@ -579,15 +588,19 @@ def telegram_webhook():
                 if edit_response.status_code != 200:
                     logger.error(f"Failed to edit message: {edit_response.text}")
 
-            elif action == "transfer":
-                # تشغيل Flow تحويل ناقص
-                success = run_flow(contact_id, channel)
+            elif action in ["transfer_minus", "transfer_plus"]:
+                # تحديد نوع الرسالة بناءً على نوع التحويل
+                flow_type = action
+                flow_name = "تحويل ناقص" if flow_type == "transfer_minus" else "تحويل زائد"
+                
+                # تشغيل Flow المناسب
+                success = run_flow(contact_id, channel, flow_type)
                 if success:
                     # إرسال رسالة تأكيد منفصلة ومسحها بعد 5 ثواني
-                    confirmation_message = f"🔄 تم تحويل الطلب إلى قسم المبيعات.\nContact ID: {contact_id}\nChannel: {channel}"
-                    send_to_client(contact_id, "🔄 تم تحويل طلبك إلى قسم المبيعات للمتابعة", channel)
+                    confirmation_message = f"🔄 تم {flow_name} للطلب بنجاح.\nContact ID: {contact_id}\nChannel: {channel}"
+                    send_to_client(contact_id, f"🔄 تم {flow_name} لطلبك وسيتم متابعته من قبل الفريق المختص", channel)
                 else:
-                    confirmation_message = f"❌ فشل تحويل الطلب.\nContact ID: {contact_id}\nChannel: {channel}"
+                    confirmation_message = f"❌ فشل {flow_name} للطلب.\nContact ID: {contact_id}\nChannel: {channel}"
                 
                 # إرسال رسالة تأكيد منفصلة
                 confirmation_response = requests.post(
@@ -606,7 +619,7 @@ def telegram_webhook():
                     
                     # مسح رسالة التأكيد بعد 5 ثواني
                     delete_message_after_delay(chat_id, confirmation_message_id, 5)
-                    logger.info(f"Transfer confirmation message scheduled for deletion: {confirmation_message_id}")
+                    logger.info(f"{flow_name} confirmation message scheduled for deletion: {confirmation_message_id}")
                 else:
                     logger.error(f"Failed to send confirmation message: {confirmation_response.text}")
 
