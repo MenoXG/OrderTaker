@@ -425,9 +425,9 @@ def send_to_telegram(message, contact_id, channel):
         return False
 
 # =============================
-# 13. إرسال رسالة طلب صورة إضافية إلى الجروب (زر واحد فقط)
+# 13. إرسال رسالة بسيطة إلى الجروب (زر واحد فقط - إرسال صورة)
 # =============================
-def send_photo_request_to_telegram(message, contact_id, channel):
+def send_simple_message_to_telegram(message, contact_id, channel):
     try:
         token = os.getenv("TELEGRAM_TOKEN")
         group_id = os.getenv("GROUP_ID")
@@ -459,13 +459,13 @@ def send_photo_request_to_telegram(message, contact_id, channel):
         response = requests.post(url, json=payload, timeout=30)
         
         if response.status_code == 200:
-            logger.info(f"Photo request sent to Telegram group with contact_id: {contact_id} and channel: {channel}")
+            logger.info(f"Simple message sent to Telegram group with contact_id: {contact_id} and channel: {channel}")
             return True
         else:
-            logger.error(f"Failed to send photo request to Telegram: {response.status_code} - {response.text}")
+            logger.error(f"Failed to send simple message to Telegram: {response.status_code} - {response.text}")
             return False
     except Exception as e:
-        logger.error(f"Error sending photo request to Telegram: {e}")
+        logger.error(f"Error sending simple message to Telegram: {e}")
         return False
 
 # =============================
@@ -487,40 +487,63 @@ def webhook():
         price_in = data.get("PriceIN", "")
         much2 = data.get("much2", "")
         paid_by = data.get("PaidBy", "")
-        cash_control = data.get("CashControl", "")  # رقم/اسم المحفظة
+        cash_control = data.get("CashControl", "")
         short_url = data.get("ShortUrl", "")
         much = data.get("much", "")
         platform = data.get("Platform", "")
         redid = data.get("redid", "")
         note = data.get("Note", "")
         contact_id = data.get("contact_id", "")
-        channel = data.get("channel", "telegram")  # القناة الافتراضية هي telegram
+        channel = data.get("channel", "telegram")
+        
+        # ⚡ **معاملات جديدة للتمييز بين أنواع الطلبات**
+        request_type = data.get("request_type", "new")  # new, photo, delay
+        complaint_reason = data.get("complaint_reason", "")
 
         if not contact_id:
             logger.error("No contact_id received in webhook")
             return {"status": "error", "message": "No contact_id"}, 400
 
-        # ⚡ **الكشف عن نوع الطلب: طلب جديد أم طلب صورة إضافي**
-        is_photo_request = False
+        # 🔍 **الكشف عن نوع الطلب تلقائياً إذا لم يتم تحديده**
+        if request_type == "new":
+            # الكشف إذا كان طلب جديد أم طلب صورة إضافي
+            has_order_data = any([
+                data.get("Agent"),
+                data.get("PriceIN"), 
+                data.get("much2"),
+                data.get("PaidBy"),
+                data.get("CashControl"),
+                data.get("much"),
+                data.get("Platform")
+            ])
+            
+            # إذا لم تكن هناك بيانات طلب، ولكن هناك رسالة من العميل فهذا طلب صورة إضافي
+            if not has_order_data and (redid or note or full_name):
+                request_type = "photo"
         
-        # إذا كان هناك بيانات أساسية للطلب (مثل Agent, PriceIN) فهذا طلب جديد
-        # إذا لم تكن هناك بيانات طلب ولكن هناك contact_id و channel فقط، فهذا طلب صورة إضافي
-        has_order_data = any([
-            data.get("Agent"),
-            data.get("PriceIN"), 
-            data.get("much2"),
-            data.get("PaidBy"),
-            data.get("CashControl"),
-            data.get("much"),
-            data.get("Platform")
-        ])
-        
-        # إذا لم تكن هناك بيانات طلب، ولكن هناك رسالة من العميل (مثل redid, note) فهذا طلب صورة إضافي
-        if not has_order_data and (redid or address or kastaddress or full_name):
-            is_photo_request = True
-            logger.info(f"Detected photo request from client: {contact_id}")
-
-        if is_photo_request:
+        # ⚡ **معالجة أنواع الطلبات المختلفة**
+        if request_type == "delay":
+            # بناء رسالة شكوى التأخر
+            message_lines = ["🚨 <b>تنبيه تأخر في التنفيذ</b>"]
+            
+            if full_name:
+                message_lines.append(f"العميل: {full_name}")
+            if username:
+                message_lines.append(f"التليجرام: @{username}")
+            if redid:
+                message_lines.append(f"الرقم التعريفي: {redid}")
+            if complaint_reason:
+                message_lines.append(f"سبب التأخر: {complaint_reason}")
+            if note:
+                message_lines.append(f"ملاحظات إضافية: {note}")
+                
+            message = "\n".join(message_lines)
+            
+            # إرسال رسالة شكوى التأخر (زر واحد فقط)
+            success = send_simple_message_to_telegram(message, contact_id, channel)
+            logger.info(f"Delay complaint processed for contact: {contact_id}")
+            
+        elif request_type == "photo":
             # بناء رسالة طلب الصورة الإضافية
             message_lines = ["📸 <b>طلب صورة إضافية من العميل</b>"]
             
@@ -536,8 +559,10 @@ def webhook():
             message = "\n".join(message_lines)
             
             # إرسال رسالة طلب الصورة الإضافية (زر واحد فقط)
-            success = send_photo_request_to_telegram(message, contact_id, channel)
-        else:
+            success = send_simple_message_to_telegram(message, contact_id, channel)
+            logger.info(f"Photo request processed for contact: {contact_id}")
+            
+        else:  # request_type == "new"
             # بناء رسالة الطلب الجديد
             message_lines = []
             
@@ -607,6 +632,7 @@ def webhook():
 
             # إرسال رسالة الطلب الجديد (بجميع الأزرار)
             success = send_to_telegram(message, contact_id, channel)
+            logger.info(f"New order processed for contact: {contact_id}")
         
         if success:
             return {"status": "ok"}, 200
