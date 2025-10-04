@@ -368,7 +368,7 @@ def send_photo_to_client(contact_id, photo_url, channel):
         return False
 
 # =============================
-# 12. إرسال رسالة إلى جروب تليجرام مع أزرار
+# 12. إرسال رسالة إلى جروب تليجرام مع أزرار (للطلبات الجديدة)
 # =============================
 def send_to_telegram(message, contact_id, channel):
     try:
@@ -425,7 +425,51 @@ def send_to_telegram(message, contact_id, channel):
         return False
 
 # =============================
-# 13. استقبال Webhook من SendPulse
+# 13. إرسال رسالة طلب صورة إضافية إلى الجروب (زر واحد فقط)
+# =============================
+def send_photo_request_to_telegram(message, contact_id, channel):
+    try:
+        token = os.getenv("TELEGRAM_TOKEN")
+        group_id = os.getenv("GROUP_ID")
+
+        if not token or not group_id:
+            logger.error("TELEGRAM_TOKEN or GROUP_ID not set")
+            return False
+
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        
+        # إضافة رمز القناة إلى الرسالة
+        channel_icon = "📱" if channel == "messenger" else "✈️"
+        message_with_channel = f"{channel_icon} {message}"
+        
+        # زر واحد فقط - إرسال صورة
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "📷 إرسال صورة", "callback_data": f"sendpic:{contact_id}:{channel}"}
+                ]
+            ]
+        }
+        payload = {
+            "chat_id": group_id,
+            "text": message_with_channel,
+            "parse_mode": "HTML",
+            "reply_markup": keyboard
+        }
+        response = requests.post(url, json=payload, timeout=30)
+        
+        if response.status_code == 200:
+            logger.info(f"Photo request sent to Telegram group with contact_id: {contact_id} and channel: {channel}")
+            return True
+        else:
+            logger.error(f"Failed to send photo request to Telegram: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error sending photo request to Telegram: {e}")
+        return False
+
+# =============================
+# 14. استقبال Webhook من SendPulse
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -456,74 +500,113 @@ def webhook():
             logger.error("No contact_id received in webhook")
             return {"status": "error", "message": "No contact_id"}, 400
 
-        # بناء الرسالة بنفس تنسيق SendPulse Flow ولكن بشكل ديناميكي
-        message_lines = []
+        # ⚡ **الكشف عن نوع الطلب: طلب جديد أم طلب صورة إضافي**
+        is_photo_request = False
         
-        # إضافة الحقول التي تحتوي على قيم فقط بنفس التنسيق المطلوب
-        if full_name or username:
-            line = ""
-            if full_name:
-                line += f"العميل {full_name}"
-            if username:
-                if line:
-                    line += f" تليجرام @{username}"
-                else:
-                    line += f"تليجرام @{username}"
-            message_lines.append(line)
+        # إذا كان هناك بيانات أساسية للطلب (مثل Agent, PriceIN) فهذا طلب جديد
+        # إذا لم تكن هناك بيانات طلب ولكن هناك contact_id و channel فقط، فهذا طلب صورة إضافي
+        has_order_data = any([
+            data.get("Agent"),
+            data.get("PriceIN"), 
+            data.get("much2"),
+            data.get("PaidBy"),
+            data.get("CashControl"),
+            data.get("much"),
+            data.get("Platform")
+        ])
         
-        if agent or price_in:
-            line = ""
-            if agent:
-                line += f"شفــت {agent}"
-            if price_in:
-                if line:
-                    line += f" سعـر البيـع {price_in}"
-                else:
-                    line += f"سعـر البيـع {price_in}"
-            message_lines.append(line)
-        
-        if much2 or paid_by:
-            line = ""
-            if much2:
-                line += f"المبلـغ {much2}"
-            if paid_by:
-                if line:
-                    line += f" جنيـه {paid_by}"
-                else:
-                    line += f"جنيـه {paid_by}"
-            message_lines.append(line)
-        
-        if cash_control:
-            message_lines.append(f"رقم/اسم المحفظـة {cash_control}")
-        
-        if short_url:
-            message_lines.append(f"الإيصـال {short_url}")
-        
-        if much or platform:
-            line = ""
-            if much:
-                line += f"الرصيــد {much}"
-            if platform:
-                if line:
-                    line += f" $ {platform}"
-                else:
-                    line += f"$ {platform}"
-            message_lines.append(line)
-        
-        if redid:
-            message_lines.append(f"{redid}")
-        
-        if note:
-            message_lines.append(f"{note}")
-        
-        # إضافة عنوان الرسالة في الأعلى
-        if message_lines:
-            message_lines.insert(0, "📩 <b>طلب جديد</b>")
-        
-        # دمج كل الأسطر في رسالة واحدة
-        message = "\n".join(message_lines) if message_lines else "📩 <b>طلب جديد</b>"
+        # إذا لم تكن هناك بيانات طلب، ولكن هناك رسالة من العميل (مثل redid, note) فهذا طلب صورة إضافي
+        if not has_order_data and (redid or address or kastaddress or full_name):
+            is_photo_request = True
+            logger.info(f"Detected photo request from client: {contact_id}")
 
-        success = send_to_telegram(message, contact_id, channel)
+        if is_photo_request:
+            # بناء رسالة طلب الصورة الإضافية
+            message_lines = ["📸 <b>طلب صورة إضافية من العميل</b>"]
+            
+            if full_name:
+                message_lines.append(f"العميل: {full_name}")
+            if username:
+                message_lines.append(f"التليجرام: @{username}")
+            if redid:
+                message_lines.append(f"الرقم التعريفي: {redid}")
+            if note:
+                message_lines.append(f"الملاحظة: {note}")
+                
+            message = "\n".join(message_lines)
+            
+            # إرسال رسالة طلب الصورة الإضافية (زر واحد فقط)
+            success = send_photo_request_to_telegram(message, contact_id, channel)
+        else:
+            # بناء رسالة الطلب الجديد
+            message_lines = []
+            
+            # إضافة الحقول التي تحتوي على قيم فقط بنفس التنسيق المطلوب
+            if full_name or username:
+                line = ""
+                if full_name:
+                    line += f"العميل {full_name}"
+                if username:
+                    if line:
+                        line += f" تليجرام @{username}"
+                    else:
+                        line += f"تليجرام @{username}"
+                message_lines.append(line)
+            
+            if agent or price_in:
+                line = ""
+                if agent:
+                    line += f"شفــت {agent}"
+                if price_in:
+                    if line:
+                        line += f" سعـر البيـع {price_in}"
+                    else:
+                        line += f"سعـر البيـع {price_in}"
+                message_lines.append(line)
+            
+            if much2 or paid_by:
+                line = ""
+                if much2:
+                    line += f"المبلـغ {much2}"
+                if paid_by:
+                    if line:
+                        line += f" جنيـه {paid_by}"
+                    else:
+                        line += f"جنيـه {paid_by}"
+                message_lines.append(line)
+            
+            if cash_control:
+                message_lines.append(f"رقم/اسم المحفظـة {cash_control}")
+            
+            if short_url:
+                message_lines.append(f"الإيصـال {short_url}")
+            
+            if much or platform:
+                line = ""
+                if much:
+                    line += f"الرصيــد {much}"
+                if platform:
+                    if line:
+                        line += f" $ {platform}"
+                    else:
+                        line += f"$ {platform}"
+                message_lines.append(line)
+            
+            if redid:
+                message_lines.append(f"{redid}")
+            
+            if note:
+                message_lines.append(f"{note}")
+            
+            # إضافة عنوان الرسالة في الأعلى
+            if message_lines:
+                message_lines.insert(0, "📩 <b>طلب جديد</b>")
+            
+            # دمج كل الأسطر في رسالة واحدة
+            message = "\n".join(message_lines) if message_lines else "📩 <b>طلب جديد</b>"
+
+            # إرسال رسالة الطلب الجديد (بجميع الأزرار)
+            success = send_to_telegram(message, contact_id, channel)
         
         if success:
             return {"status": "ok"}, 200
@@ -535,7 +618,7 @@ def webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 14. استقبال ضغط الأزرار + الصور من التليجرام
+# 15. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
@@ -757,7 +840,7 @@ def telegram_webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 15. صفحات التحقق
+# 16. صفحات التحقق
 # =============================
 @app.route("/")
 def home():
@@ -772,7 +855,7 @@ def health():
     return {"status": "healthy", "timestamp": time.time()}, 200
 
 # =============================
-# 16. إعداد Webhook للتليجرام
+# 17. إعداد Webhook للتليجرام
 # =============================
 @app.route("/set_webhook")
 def set_webhook():
