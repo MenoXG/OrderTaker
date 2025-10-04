@@ -376,7 +376,58 @@ def send_photo_to_client(contact_id, photo_url, channel):
         return False
 
 # =============================
-# 12. إرسال رسالة إلى جروب تليجرام بناءً على السيناريو
+# 12. دالة تنسيق بيانات الطلب
+# =============================
+def format_order_data(order_text):
+    """
+    تنسيق بيانات الطلب لتكون أكثر تنظيماً ووضوحاً
+    """
+    try:
+        # تقسيم النص إلى أسطر
+        lines = order_text.split('\n')
+        formatted_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # الكشف عن نوع البيانات وتنسيقها
+            if any(keyword in line for keyword in ['العميل', 'اسم', 'Name', 'name', 'client']):
+                formatted_lines.append(f"👤 {line}")
+            elif any(keyword in line for keyword in ['تليجرام', 'تيليجرام', 'telegram', 'username', '@']):
+                formatted_lines.append(f"📱 {line}")
+            elif any(keyword in line for keyword in ['شفــت', 'منتج', 'Product', 'product', 'Agent', 'agent']):
+                formatted_lines.append(f"🛒 {line}")
+            elif any(keyword in line for keyword in ['سعـر البيـع', 'سعر', 'Price', 'price', 'PriceIN']):
+                formatted_lines.append(f"💰 {line}")
+            elif any(keyword in line for keyword in ['المبلـغ', 'مبلغ', 'Amount', 'amount', 'much2']):
+                formatted_lines.append(f"💵 {line}")
+            elif any(keyword in line for keyword in ['جنيـه', 'دفع', 'Payment', 'payment', 'PaidBy']):
+                formatted_lines.append(f"💳 {line}")
+            elif any(keyword in line for keyword in ['المحفظـة', 'محفظة', 'Wallet', 'wallet', 'CashControl']):
+                formatted_lines.append(f"🏦 {line}")
+            elif any(keyword in line for keyword in ['الإيصـال', 'إيصال', 'Receipt', 'receipt', 'ShortUrl']):
+                formatted_lines.append(f"🧾 {line}")
+            elif any(keyword in line for keyword in ['الرصيــد', 'رصيد', 'Balance', 'balance', 'much']):
+                formatted_lines.append(f"💎 {line}")
+            elif any(keyword in line for keyword in ['$', 'منصة', 'Platform', 'platform']):
+                formatted_lines.append(f"💻 {line}")
+            elif any(keyword in line for keyword in ['ORDER', 'رقم', 'ID', 'id', 'redid']):
+                formatted_lines.append(f"🆔 {line}")
+            elif any(keyword in line for keyword in ['ملاحظ', 'Note', 'note', 'ملاحظة', 'notes']):
+                formatted_lines.append(f"📝 {line}")
+            else:
+                formatted_lines.append(f"📌 {line}")
+        
+        return "\n".join(formatted_lines)
+        
+    except Exception as e:
+        logger.error(f"Error formatting order data: {e}")
+        return order_text  # إرجاع النص الأصلي في حالة الخطأ
+
+# =============================
+# 13. إرسال رسالة إلى جروب تليجرام بناءً على السيناريو
 # =============================
 def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
     try:
@@ -483,7 +534,7 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
         return False
 
 # =============================
-# 13. دالة التحقق من الطلبات المتأخرة وإرسال تنبيه
+# 14. دالة التحقق من الطلبات المتأخرة وإرسال تنبيه
 # =============================
 def check_delayed_orders():
     try:
@@ -532,7 +583,7 @@ def check_delayed_orders():
         logger.error(f"❌ Error in check_delayed_orders: {e}")
 
 # =============================
-# 14. بدء مؤقت للتحقق من الطلبات المتأخرة
+# 15. بدء مؤقت للتحقق من الطلبات المتأخرة
 # =============================
 def start_delayed_orders_checker():
     def checker_loop():
@@ -552,13 +603,13 @@ def start_delayed_orders_checker():
     logger.info("✅ Delayed orders checker started successfully")
 
 # =============================
-# 15. استقبال Webhook من SendPulse
+# 16. استقبال Webhook من SendPulse
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.get_json()
-        logger.info(f"📩 Received webhook data: {data}")
+        logger.info(f"📩 Received webhook data")
 
         if not data:
             return {"status": "error", "message": "No data received"}, 400
@@ -572,8 +623,6 @@ def webhook():
         neworder = data.get("neworder", "")
         
         # 🔍 **الحفاظ على التوافق مع النظام القديم**
-        # إذا كان neworder موجوداً، نستخدمه كرسالة كاملة
-        # إذا لم يكن موجوداً، نستخدم البيانات الفردية القديمة
         full_name = data.get("full_name", "")
         username = data.get("username", "")
         agent = data.get("Agent", "")
@@ -597,7 +646,11 @@ def webhook():
             # بناء رسالة شكوى التأخر
             if neworder:
                 # استخدام neworder إذا كان متوفراً
-                message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n{neworder}"
+                if any(keyword in neworder for keyword in ['👤', '📱', '🛒', '💰', '💵', '💳', '🏦', '🧾', '💎', '💻', '🆔', '📝']):
+                    message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n{neworder}"
+                else:
+                    formatted_order = format_order_data(neworder)
+                    message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n{formatted_order}"
             else:
                 # استخدام النظام القديم
                 message_lines = ["🚨 <b>تنبيه تأخر في التنفيذ</b>"]
@@ -625,7 +678,11 @@ def webhook():
             # بناء رسالة طلب الصورة الإضافية
             if neworder:
                 # استخدام neworder إذا كان متوفراً
-                message = f"📸 <b>طلب صورة إضافية من العميل</b>\n{neworder}"
+                if any(keyword in neworder for keyword in ['👤', '📱', '🛒', '💰', '💵', '💳', '🏦', '🧾', '💎', '💻', '🆔', '📝']):
+                    message = f"📸 <b>طلب صورة إضافية من العميل</b>\n{neworder}"
+                else:
+                    formatted_order = format_order_data(neworder)
+                    message = f"📸 <b>طلب صورة إضافية من العميل</b>\n{formatted_order}"
             else:
                 # استخدام النظام القديم
                 message_lines = ["📸 <b>طلب صورة إضافية من العميل</b>"]
@@ -649,7 +706,11 @@ def webhook():
             # بناء رسالة الطلب الجديد
             if neworder:
                 # استخدام neworder إذا كان متوفراً
-                message = f"📩 <b>طلب جديد</b>\n{neworder}"
+                if any(keyword in neworder for keyword in ['👤', '📱', '🛒', '💰', '💵', '💳', '🏦', '🧾', '💎', '💻', '🆔', '📝']):
+                    message = f"📩 <b>طلب جديد</b>\n{neworder}"
+                else:
+                    formatted_order = format_order_data(neworder)
+                    message = f"📩 <b>طلب جديد</b>\n{formatted_order}"
             else:
                 # استخدام النظام القديم
                 message_lines = []
@@ -732,7 +793,7 @@ def webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 16. استقبال ضغط الأزرار + الصور من التليجرام
+# 17. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
@@ -970,9 +1031,8 @@ def telegram_webhook():
     except Exception as e:
         logger.error(f"❌ Error in Telegram webhook: {e}")
         return {"status": "error", "message": str(e)}, 500
-
-# =============================
-# 17. صفحات التحقق
+            # =============================
+# 18. صفحات التحقق
 # =============================
 @app.route("/")
 def home():
@@ -988,7 +1048,7 @@ def health():
     return {"status": "healthy", "timestamp": time.time(), "active_orders": len(client_messages)}, 200
 
 # =============================
-# 18. إعداد Webhook للتليجرام
+# 19. إعداد Webhook للتليجرام
 # =============================
 @app.route("/set_webhook")
 def set_webhook():
@@ -1009,7 +1069,7 @@ def set_webhook():
         return {"error": str(e)}, 500
 
 # =============================
-# 19. صفحة لعرض الطلبات النشطة
+# 20. صفحة لعرض الطلبات النشطة
 # =============================
 @app.route("/active_orders")
 def active_orders():
@@ -1038,7 +1098,7 @@ def active_orders():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 20. بدء التطبيق
+# 21. بدء التطبيق
 # =============================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
