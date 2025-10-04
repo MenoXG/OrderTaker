@@ -425,7 +425,7 @@ def send_to_telegram(message, contact_id, channel):
         return False
 
 # =============================
-# 13. استقبال Webhook من SendPulse (نسخة محسنة)
+# 13. استقبال Webhook من SendPulse
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -436,106 +436,92 @@ def webhook():
         if not data:
             return {"status": "error", "message": "No data received"}, 400
 
-        # الحقول المعروفة مسبقاً
-        known_fields = {
-            "full_name": "العميل {}",
-            "username": "تليجرام @{}", 
-            "Agent": "شفــت {}",
-            "PriceIN": "سعـر البيـع {}",
-            "much2": "المبلـغ {}",
-            "PaidBy": "جنيـه {}",
-            "CashControl": "رقم/اسم المحفظـة {}",
-            "ShortUrl": "الإيصـال {}",
-            "much": "الرصيــد {}",
-            "Platform": "$ {}",
-            "redid": "{}",
-            "Note": "{}"
-        }
-
-        # الحقول النظامية
-        system_fields = ["contact_id", "channel"]
-        
+        # استخراج البيانات من الـ webhook
+        full_name = data.get("full_name", "")
+        username = data.get("username", "")
+        agent = data.get("Agent", "")
+        price_in = data.get("PriceIN", "")
+        much2 = data.get("much2", "")
+        paid_by = data.get("PaidBy", "")
+        cash_control = data.get("CashControl", "")  # رقم/اسم المحفظة
+        short_url = data.get("ShortUrl", "")
+        much = data.get("much", "")
+        platform = data.get("Platform", "")
+        redid = data.get("redid", "")
+        note = data.get("Note", "")
         contact_id = data.get("contact_id", "")
-        channel = data.get("channel", "telegram")
+        channel = data.get("channel", "telegram")  # القناة الافتراضية هي telegram
 
         if not contact_id:
             logger.error("No contact_id received in webhook")
             return {"status": "error", "message": "No contact_id"}, 400
 
-        # بناء الرسالة
-        message_parts = ["📩 <b>طلب جديد</b>"]
+        # بناء الرسالة بنفس تنسيق SendPulse Flow ولكن بشكل ديناميكي
+        message_lines = []
         
-        # إضافة الحقول المعروفة
-        line1 = ""
-        if data.get("full_name"):
-            line1 += known_fields["full_name"].format(data["full_name"])
-        if data.get("username"):
-            if line1:
-                line1 += " " + known_fields["username"].format(data["username"])
-            else:
-                line1 += known_fields["username"].format(data["username"])
-        if line1:
-            message_parts.append(line1)
-
-        line2 = ""
-        if data.get("Agent"):
-            line2 += known_fields["Agent"].format(data["Agent"])
-        if data.get("PriceIN"):
-            if line2:
-                line2 += " " + known_fields["PriceIN"].format(data["PriceIN"])
-            else:
-                line2 += known_fields["PriceIN"].format(data["PriceIN"])
-        if line2:
-            message_parts.append(line2)
-
-        line3 = ""
-        if data.get("much2"):
-            line3 += known_fields["much2"].format(data["much2"])
-        if data.get("PaidBy"):
-            if line3:
-                line3 += " " + known_fields["PaidBy"].format(data["PaidBy"])
-            else:
-                line3 += known_fields["PaidBy"].format(data["PaidBy"])
-        if line3:
-            message_parts.append(line3)
-
-        # الحقول المنفردة
-        if data.get("CashControl"):
-            message_parts.append(known_fields["CashControl"].format(data["CashControl"]))
-        if data.get("ShortUrl"):
-            message_parts.append(known_fields["ShortUrl"].format(data["ShortUrl"]))
+        # إضافة الحقول التي تحتوي على قيم فقط بنفس التنسيق المطلوب
+        if full_name or username:
+            line = ""
+            if full_name:
+                line += f"العميل {full_name}"
+            if username:
+                if line:
+                    line += f" تليجرام @{username}"
+                else:
+                    line += f"تليجرام @{username}"
+            message_lines.append(line)
         
-        line6 = ""
-        if data.get("much"):
-            line6 += known_fields["much"].format(data["much"])
-        if data.get("Platform"):
-            if line6:
-                line6 += " " + known_fields["Platform"].format(data["Platform"])
-            else:
-                line6 += known_fields["Platform"].format(data["Platform"])
-        if line6:
-            message_parts.append(line6)
-
-        if data.get("redid"):
-            message_parts.append(known_fields["redid"].format(data["redid"]))
-        if data.get("Note"):
-            message_parts.append(known_fields["Note"].format(data["Note"]))
-
-        # 🔥 **إضافة جديدة: عرض المتغيرات الإضافية تلقائياً**
-        additional_fields = []
-        for key, value in data.items():
-            if key not in known_fields and key not in system_fields and value:
-                additional_fields.append(f"{key}: {value}")
+        if agent or price_in:
+            line = ""
+            if agent:
+                line += f"شفــت {agent}"
+            if price_in:
+                if line:
+                    line += f" سعـر البيـع {price_in}"
+                else:
+                    line += f"سعـر البيـع {price_in}"
+            message_lines.append(line)
         
-        if additional_fields:
-            message_parts.append("\nمعلومات إضافية:")
-            message_parts.extend(additional_fields)
-
-        # إضافة معلومات النظام
-        message_parts.append(f"Contact ID: {contact_id}")
-        message_parts.append(f"Channel: {channel}")
+        if much2 or paid_by:
+            line = ""
+            if much2:
+                line += f"المبلـغ {much2}"
+            if paid_by:
+                if line:
+                    line += f" جنيـه {paid_by}"
+                else:
+                    line += f"جنيـه {paid_by}"
+            message_lines.append(line)
         
-        message = "\n".join(message_parts)
+        if cash_control:
+            message_lines.append(f"رقم/اسم المحفظـة {cash_control}")
+        
+        if short_url:
+            message_lines.append(f"الإيصـال {short_url}")
+        
+        if much or platform:
+            line = ""
+            if much:
+                line += f"الرصيــد {much}"
+            if platform:
+                if line:
+                    line += f" $ {platform}"
+                else:
+                    line += f"$ {platform}"
+            message_lines.append(line)
+        
+        if redid:
+            message_lines.append(f"{redid}")
+        
+        if note:
+            message_lines.append(f"{note}")
+        
+        # إضافة عنوان الرسالة في الأعلى
+        if message_lines:
+            message_lines.insert(0, "📩 <b>طلب جديد</b>")
+        
+        # دمج كل الأسطر في رسالة واحدة
+        message = "\n".join(message_lines) if message_lines else "📩 <b>طلب جديد</b>"
 
         success = send_to_telegram(message, contact_id, channel)
         
@@ -591,7 +577,7 @@ def telegram_webhook():
             # معالجة الإجراءات المختلفة
             if action == "done":
                 send_to_client(contact_id, "✅ تم تنفيذ طلبك بنجاح", channel)
-                new_text = f"✅ تم تنفيذ الطلب.\nContact ID: {contact_id}\nChannel: {channel}"
+                new_text = f"✅ تم تنفيذ الطلب بنجاح"
                 
                 # تعديل الرسالة الأصلية في الجروب
                 edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
@@ -612,7 +598,7 @@ def telegram_webhook():
                 
             elif action == "cancel":
                 send_to_client(contact_id, "❌ تم إلغاء طلبك.", channel)
-                new_text = f"❌ تم إلغاء الطلب.\nContact ID: {contact_id}\nChannel: {channel}"
+                new_text = f"❌ تم إلغاء الطلب"
                 
                 # تعديل الرسالة الأصلية في الجروب
                 edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
@@ -638,7 +624,7 @@ def telegram_webhook():
                     'channel': channel,
                     'request_message_id': message_id  # حفظ معرف الرسالة التي تطلب الصورة
                 }
-                new_text = f"📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل.\nContact ID: {contact_id}\nChannel: {channel}"
+                new_text = f"📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل"
                 
                 # تعديل الرسالة الأصلية في الجروب
                 edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
@@ -661,11 +647,10 @@ def telegram_webhook():
                 # تشغيل Flow المناسب
                 success = run_flow(contact_id, channel, flow_type)
                 if success:
-                    # إرسال رسالة تأكيد منفصلة ومسحها بعد 5 ثواني
-                    confirmation_message = f"🔄 تم {flow_name} للطلب بنجاح.\nContact ID: {contact_id}\nChannel: {channel}"
+                    confirmation_message = f"🔄 تم {flow_name} للطلب بنجاح"
                     send_to_client(contact_id, f"🔄 تم {flow_name} لطلبك وسيتم متابعته من قبل الفريق المختص", channel)
                 else:
-                    confirmation_message = f"❌ فشل {flow_name} للطلب.\nContact ID: {contact_id}\nChannel: {channel}"
+                    confirmation_message = f"❌ فشل {flow_name} للطلب"
                 
                 # إرسال رسالة تأكيد منفصلة
                 confirmation_response = requests.post(
@@ -743,7 +728,7 @@ def telegram_webhook():
                                     f"https://api.telegram.org/bot{token}/sendMessage",
                                     json={
                                         "chat_id": chat_id,
-                                        "text": f"✅ تم إرسال الصورة للعميل (Contact ID: {contact_id}, Channel: {channel})"
+                                        "text": f"✅ تم إرسال الصورة للعميل بنجاح"
                                     },
                                     timeout=30
                                 )
