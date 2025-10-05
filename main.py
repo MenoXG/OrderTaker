@@ -238,7 +238,7 @@ def send_photo_to_client(contact_id, photo_url, channel):
         return False
 
 # =============================
-# 7. إرسال رسالة إلى جروب تليجرام
+# 7. إرسال رسالة إلى جروب تليجرام - محسنة للتتبع
 # =============================
 def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
     try:
@@ -320,9 +320,10 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
         response = requests.post(url, json=payload, timeout=30)
         
         if response.status_code == 200:
-            message_id = response.json()['result']['message_id']
+            result = response.json()
+            message_id = result['result']['message_id']
             
-            # حفظ في الذاكرة لتتبع الطلبات
+            # ✅ **الإصلاح الأساسي: حفظ الطلب في الذاكرة**
             if contact_id not in client_messages:
                 client_messages[contact_id] = {}
             
@@ -332,7 +333,14 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
                 'channel': channel
             }
             
-            logger.info(f"✅ Message sent and stored: contact_id={contact_id}, scenario={scenario}")
+            logger.info(f"✅ Message sent and stored in memory: contact_id={contact_id}, scenario={scenario}")
+            logger.info(f"📊 Current orders in memory: {len(client_messages)}")
+            
+            # ✅ **سجل إضافي للتأكد من الحفظ**
+            if contact_id in client_messages and scenario in client_messages[contact_id]:
+                stored_time = client_messages[contact_id][scenario]['timestamp']
+                logger.info(f"💾 CONFIRMED: Order {contact_id} stored at {stored_time}")
+            
             return True
         else:
             logger.error(f"❌ Failed to send to Telegram: {response.status_code}")
@@ -342,76 +350,138 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
         return False
 
 # =============================
-# 8. التحقق من الطلبات المتأخرة
+# 8. التحقق من الطلبات المتأخرة - محسنة تماماً
 # =============================
 def check_delayed_orders():
     try:
-        logger.info("🔍 Checking delayed orders...")
+        logger.info("🔍 === STARTING DELAYED ORDERS CHECK ===")
+        logger.info(f"📊 Total contacts in memory: {len(client_messages)}")
         
+        if not client_messages:
+            logger.info("📭 No orders in memory to check")
+            return
+            
         current_time = datetime.now()
         delayed_contacts = []
 
+        # ✅ **فحص تفصيلي لكل طلب**
         for contact_id, scenarios in list(client_messages.items()):
+            logger.info(f"  👤 Checking contact: {contact_id}")
+            
             if 'order' in scenarios:
                 order_data = scenarios['order']
                 order_time = order_data['timestamp']
                 time_diff = current_time - order_time
+                minutes_passed = int(time_diff.total_seconds() / 60)
+                seconds_passed = int(time_diff.total_seconds())
                 
-                # إذا مرت أكثر من 5 دقائق على الطلب
-                if time_diff.total_seconds() > 300:
+                logger.info(f"    📝 Order age: {minutes_passed} minutes ({seconds_passed} seconds)")
+                
+                # ✅ **الشرط الأساسي: إذا مرت أكثر من 5 دقائق**
+                if seconds_passed > 300:  # 300 ثانية = 5 دقائق
                     if 'delay_alert_sent' not in scenarios:
-                        delayed_contacts.append(contact_id)
-                        logger.info(f"🚨 Order for contact {contact_id} is DELAYED")
+                        delayed_contacts.append({
+                            'contact_id': contact_id,
+                            'order_data': order_data,
+                            'minutes_passed': minutes_passed
+                        })
+                        logger.info(f"    🚨 DELAYED ORDER FOUND: {contact_id} - {minutes_passed} minutes")
+                    else:
+                        logger.info(f"    ℹ️ Alert already sent for: {contact_id}")
+                else:
+                    remaining = 300 - seconds_passed
+                    logger.info(f"    ✅ Order still fresh: {contact_id} - {remaining} seconds remaining")
 
-        # إرسال تنبيهات للطلبات المتأخرة
-        for contact_id in delayed_contacts:
+        logger.info(f"📊 Check completed: {len(delayed_contacts)} delayed orders found")
+
+        # ✅ **إرسال تنبيهات للطلبات المتأخرة**
+        for delayed in delayed_contacts:
+            contact_id = delayed['contact_id']
+            order_data = delayed['order_data']
+            minutes_passed = delayed['minutes_passed']
+            
+            # التحقق النهائي قبل الإرسال
             if contact_id in client_messages and 'delay_alert_sent' not in client_messages[contact_id]:
-                order_data = client_messages[contact_id]['order']
                 channel = order_data.get('channel', 'telegram')
                 
                 delay_message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n"
                 delay_message += f"🆔 الرقم التعريفي: {contact_id}\n"
-                delay_message += f"⏰ الوقت المنقضي: أكثر من 5 دقائق\n"
+                delay_message += f"⏰ الوقت المنقضي: {minutes_passed} دقائق\n"
                 delay_message += f"📞 القناة: {channel}\n"
                 delay_message += f"🔔 تم إرسال الطلب في: {order_data['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"
                 
+                # إرسال رسالة تنبيه التأخر
                 success = send_scenario_message_to_telegram(delay_message, contact_id, channel, "delay")
                 if success:
-                    client_messages[contact_id]['delay_alert_sent'] = {'timestamp': datetime.now()}
-                    logger.info(f"✅ Delay alert sent for contact: {contact_id}")
+                    logger.info(f"✅ Delay alert sent successfully for contact: {contact_id}")
+                    
+                    # ✅ **وضع علامة أن تنبيه التأخر تم إرساله**
+                    client_messages[contact_id]['delay_alert_sent'] = {
+                        'timestamp': datetime.now(),
+                        'alert_minutes': minutes_passed
+                    }
+                else:
+                    logger.error(f"❌ Failed to send delay alert for contact: {contact_id}")
+            else:
+                logger.info(f"ℹ️ Delay alert already sent or contact not found: {contact_id}")
                 
-        logger.info(f"📊 Found {len(delayed_contacts)} delayed orders")
+        logger.info(f"📊 Delayed orders processing completed. Sent {len(delayed_contacts)} alerts")
         
     except Exception as e:
         logger.error(f"❌ Error in check_delayed_orders: {e}")
 
 # =============================
-# 9. بدء مؤقت للتحقق من الطلبات المتأخرة
+# 9. بدء مؤقت للتحقق من الطلبات المتأخرة - محسنة
 # =============================
 def start_delayed_orders_checker():
     def checker_loop():
-        logger.info("🔄 Starting delayed orders checker...")
+        logger.info("🔄 === STARTING DELAYED ORDERS CHECKER LOOP ===")
+        check_count = 0
+        
         while True:
             try:
+                check_count += 1
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                logger.info(f"🔍 Check #{check_count} at {current_time}")
+                logger.info(f"📊 Current active orders: {len(client_messages)}")
+                
+                # ✅ **سجل تفصيلي للطلبات النشطة**
+                if client_messages:
+                    logger.info("📋 Active orders details:")
+                    for contact_id, scenarios in client_messages.items():
+                        if 'order' in scenarios:
+                            order_data = scenarios['order']
+                            time_diff = datetime.now() - order_data['timestamp']
+                            minutes_passed = int(time_diff.total_seconds() / 60)
+                            has_alert = 'delay_alert_sent' in scenarios
+                            status = "DELAYED" if minutes_passed >= 5 else "FRESH"
+                            
+                            logger.info(f"   - {contact_id}: {minutes_passed}m ({status}), alert: {has_alert}")
+                
+                # ✅ **تشغيل الفحص**
                 check_delayed_orders()
-                time.sleep(30)  # التحقق كل 30 ثانية
+                
+                # ✅ **الانتظار 30 ثانية بين الفحوصات**
+                logger.info(f"⏳ Waiting 30 seconds until next check...")
+                time.sleep(30)
+                
             except Exception as e:
-                logger.error(f"❌ Error in delayed orders checker: {e}")
+                logger.error(f"❌ Error in delayed orders checker loop: {e}")
                 time.sleep(30)
     
     thread = threading.Thread(target=checker_loop)
     thread.daemon = True
     thread.start()
-    logger.info("✅ Delayed orders checker started")
+    logger.info("✅ Enhanced delayed orders checker started successfully")
 
 # =============================
-# 10. استقبال Webhook من SendPulse
+# 10. استقبال Webhook من SendPulse - محسنة
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.get_json()
-        logger.info(f"📩 Received webhook data")
+        logger.info(f"📩 === NEW WEBHOOK RECEIVED ===")
 
         if not data:
             return {"status": "error", "message": "No data received"}, 400
@@ -425,9 +495,10 @@ def webhook():
             logger.error("❌ No contact_id received in webhook")
             return {"status": "error", "message": "No contact_id"}, 400
 
-        logger.info(f"📝 Processing scenario: {scenario}, contact_id: {contact_id}")
+        logger.info(f"📝 Processing: scenario={scenario}, contact_id={contact_id}, channel={channel}")
+        logger.info(f"📦 neworder data present: {bool(neworder)}")
 
-        # بناء الرسالة من neworder فقط - بدون تنسيق
+        # ✅ **بناء الرسالة من neworder فقط - بدون تنسيق**
         if neworder:
             if isinstance(neworder, dict):
                 formatted_order = json.dumps(neworder, ensure_ascii=False, indent=2)
@@ -436,7 +507,7 @@ def webhook():
         else:
             formatted_order = "لا توجد بيانات"
 
-        # بناء الرسالة بناءً على السيناريو
+        # ✅ **بناء الرسالة بناءً على السيناريو**
         if scenario == "delay":
             message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n{formatted_order}"
         elif scenario == "photo":
@@ -444,12 +515,14 @@ def webhook():
         else:  # order
             message = f"📩 <b>طلب جديد</b>\n{formatted_order}"
 
-        # إرسال الرسالة
+        # ✅ **إرسال الرسالة وحفظها في الذاكرة**
         success = send_scenario_message_to_telegram(message, contact_id, channel, scenario)
         
         if success:
+            logger.info(f"✅ Webhook processed successfully for {contact_id}")
             return {"status": "ok"}, 200
         else:
+            logger.error(f"❌ Failed to process webhook for {contact_id}")
             return {"status": "error", "message": "Failed to send to Telegram"}, 500
             
     except Exception as e:
@@ -511,11 +584,14 @@ def telegram_webhook():
                 requests.post(edit_url, json=edit_payload, timeout=30)
                 delete_message_after_delay(chat_id, message_id, 5)
                 
-                # مسح من الذاكرة
-                if contact_id in client_messages and scenario in client_messages[contact_id]:
-                    del client_messages[contact_id][scenario]
+                # ✅ **مسح من الذاكرة**
+                if contact_id in client_messages:
+                    if scenario in client_messages[contact_id]:
+                        del client_messages[contact_id][scenario]
+                        logger.info(f"🧹 Removed {scenario} from memory for {contact_id}")
                     if not client_messages[contact_id]:
                         del client_messages[contact_id]
+                        logger.info(f"🧹 Removed contact {contact_id} from memory")
                 
             elif action == "cancel":
                 send_to_client(contact_id, "❌ تم إلغاء طلبك.", channel)
@@ -529,11 +605,14 @@ def telegram_webhook():
                 requests.post(edit_url, json=edit_payload, timeout=30)
                 delete_message_after_delay(chat_id, message_id, 5)
                 
-                # مسح من الذاكرة
-                if contact_id in client_messages and scenario in client_messages[contact_id]:
-                    del client_messages[contact_id][scenario]
+                # ✅ **مسح من الذاكرة**
+                if contact_id in client_messages:
+                    if scenario in client_messages[contact_id]:
+                        del client_messages[contact_id][scenario]
+                        logger.info(f"🧹 Removed {scenario} from memory for {contact_id}")
                     if not client_messages[contact_id]:
                         del client_messages[contact_id]
+                        logger.info(f"🧹 Removed contact {contact_id} from memory")
                 
             elif action == "sendpic":
                 pending_photos[str(chat_id)] = {
@@ -631,13 +710,13 @@ def telegram_webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 12. صفحات التحقق والإدارة
+# 12. صفحات المراقبة والتصحيح
 # =============================
 @app.route("/")
 def home():
     return {
         "status": "running",
-        "service": "OrderTaker - Simplified Version",
+        "service": "OrderTaker - Fixed Delay System",
         "timestamp": time.time(),
         "active_orders": len(client_messages)
     }
@@ -656,29 +735,63 @@ def active_orders():
             if 'order' in scenarios:
                 order_data = scenarios['order']
                 time_diff = current_time - order_data['timestamp']
+                minutes_passed = int(time_diff.total_seconds() / 60)
+                has_alert = 'delay_alert_sent' in scenarios
+                
                 orders_info.append({
                     'contact_id': contact_id,
                     'channel': order_data.get('channel', 'telegram'),
                     'timestamp': order_data['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
-                    'minutes_passed': int(time_diff.total_seconds() / 60),
-                    'is_delayed': time_diff.total_seconds() > 300,
-                    'has_delay_alert': 'delay_alert_sent' in scenarios
+                    'minutes_passed': minutes_passed,
+                    'is_delayed': minutes_passed >= 5,
+                    'has_delay_alert': has_alert
                 })
         
         return {
             "status": "ok",
             "active_orders_count": len(orders_info),
+            "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S'),
+            "total_contacts_in_memory": len(client_messages),
             "orders": orders_info
         }
     except Exception as e:
         logger.error(f"❌ Error in active_orders: {e}")
         return {"status": "error", "message": str(e)}, 500
 
+@app.route("/debug_memory")
+def debug_memory():
+    try:
+        debug_info = {}
+        for contact_id, scenarios in client_messages.items():
+            debug_info[contact_id] = {}
+            for scenario, data in scenarios.items():
+                if scenario == 'order':
+                    time_diff = datetime.now() - data['timestamp']
+                    debug_info[contact_id][scenario] = {
+                        'minutes_old': int(time_diff.total_seconds() / 60),
+                        'timestamp': data['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
+                        'channel': data.get('channel', 'telegram')
+                    }
+        
+        return {
+            "status": "ok",
+            "total_contacts": len(client_messages),
+            "memory_contents": debug_info
+        }
+    except Exception as e:
+        logger.error(f"❌ Error in debug_memory: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
 @app.route("/trigger_check")
 def trigger_check():
     try:
+        logger.info("🔔 Manual delayed orders check triggered via API")
         check_delayed_orders()
-        return {"status": "ok", "message": "Delayed orders check triggered manually"}
+        return {
+            "status": "ok", 
+            "message": "Delayed orders check triggered manually",
+            "active_contacts": len(client_messages)
+        }
     except Exception as e:
         logger.error(f"❌ Error in trigger_check: {e}")
         return {"status": "error", "message": str(e)}, 500
@@ -688,10 +801,10 @@ def trigger_check():
 # =============================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    logger.info(f"🚀 Starting Simplified OrderTaker server on port {port}")
+    logger.info(f"🚀 Starting FIXED OrderTaker server on port {port}")
     
     # بدء نظام التحقق من الطلبات المتأخرة
     start_delayed_orders_checker()
-    logger.info("✅ Delayed orders checker initialized")
+    logger.info("✅ Fixed delayed orders checker initialized")
     
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False)                
