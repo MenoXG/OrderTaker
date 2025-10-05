@@ -471,7 +471,9 @@ def webhook():
                     if platform:
                         if line:
                             line += f" 💻 $ {platform}"
-                       message_lines.append(line)
+                           else:
+                            line += f"💻 $ {platform}"
+                    message_lines.append(line)
                 
                 if redid:
                     message_lines.append(f"🆔 {redid}")
