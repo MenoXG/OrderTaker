@@ -815,7 +815,7 @@ def webhook():
     except Exception as e:
         logger.error(f"❌ Error in webhook: {e}")
         return {"status": "error", "message": str(e)}, 500
-
+        
 # =============================
 # 17. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
@@ -976,7 +976,7 @@ def telegram_webhook():
         # التعامل مع الصور
         elif "message" in data and "photo" in data["message"]:
             message_data = data["message"]
-              chat_id = message_data["chat"]["id"]
+            chat_id = message_data["chat"]["id"]
             message_id = message_data["message_id"]  # معرف رسالة الصورة المرسلة
 
             logger.info(f"🖼️ Photo received in chat {chat_id}")
@@ -1055,7 +1055,7 @@ def telegram_webhook():
     except Exception as e:
         logger.error(f"❌ Error in Telegram webhook: {e}")
         return {"status": "error", "message": str(e)}, 500
-
+        
 # =============================
 # 18. صفحات التحقق
 # =============================
