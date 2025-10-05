@@ -8,6 +8,7 @@ import shutil
 import threading
 from datetime import datetime, timedelta
 import json
+import base64
 
 # إعداد logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -69,128 +70,116 @@ def delete_message_after_delay(chat_id, message_id, delay_seconds):
         success = delete_telegram_message(chat_id, message_id)
         if success:
             logger.info(f"🗑️ Auto-deleted message {message_id} after {delay_seconds} seconds")
+        else:
+            logger.error(f"❌ Failed to auto-delete message {message_id}")
     
     thread = threading.Thread(target=delete)
     thread.daemon = True
     thread.start()
 
 # =============================
-# 3. دالة للحصول على Access Token من SendPulse
+# 3. دالة تحميل الصورة وإنشاء رابط مؤقت - محسنة
 # =============================
-def get_sendpulse_token():
+def download_and_create_temp_url(file_url, token, contact_id):
     try:
-        client_id = os.getenv("SENDPULSE_API_ID")
-        client_secret = os.getenv("SENDPULSE_API_SECRET")
+        logger.info(f"📥 Starting photo download from: {file_url}")
         
-        if not client_id or not client_secret:
-            logger.error("SendPulse API credentials not set")
+        # تحميل الصورة من Telegram
+        response = requests.get(file_url, stream=True, timeout=30)
+        
+        if response.status_code == 200:
+            # إنشاء ملف مؤقت في الذاكرة
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
+                for chunk in response.iter_content(chunk_size=8192):
+                    temp_file.write(chunk)
+                temp_path = temp_file.name
+            
+            logger.info(f"✅ Photo downloaded successfully: {temp_path}")
+            
+            try:
+                # محاولة الرفع إلى tmpfiles.org
+                with open(temp_path, 'rb') as f:
+                    files = {'file': f}
+                    upload_response = requests.post(
+                        'https://tmpfiles.org/api/v1/upload',
+                        files=files,
+                        timeout=30
+                    )
+                
+                # تنظيف الملف المؤقت
+                os.unlink(temp_path)
+                
+                if upload_response.status_code == 200:
+                    upload_data = upload_response.json()
+                    if upload_data.get('status') == 'success':
+                        download_url = upload_data['data']['url']
+                        direct_url = download_url.replace('tmpfiles.org/', 'tmpfiles.org/dl/')
+                        logger.info(f"✅ Temporary URL created: {direct_url}")
+                        return direct_url
+                    else:
+                        logger.error(f"❌ Upload failed: {upload_data}")
+                        return None
+                else:
+                    logger.error(f"❌ Upload failed with status: {upload_response.status_code}")
+                    return None
+                    
+            except Exception as upload_error:
+                logger.error(f"❌ Error uploading to tmpfiles.org: {upload_error}")
+                # تنظيف الملف في حالة الخطأ
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                return None
+                
+        else:
+            logger.error(f"❌ Failed to download photo: {response.status_code}")
             return None
             
-        url = "https://api.sendpulse.com/oauth/access_token"
-        payload = {
-            "grant_type": "client_credentials",
-            "client_id": client_id,
-            "client_secret": client_secret
-        }
-        response = requests.post(url, data=payload, timeout=30)
-        data = response.json()
-        token = data.get("access_token")
-        if not token:
-            logger.error("Failed to get SendPulse token")
-        return token
     except Exception as e:
-        logger.error(f"Error getting SendPulse token: {e}")
+        logger.error(f"❌ Error in download_and_create_temp_url: {e}")
+        # تنظيف الملف في حالة الخطأ
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.unlink(temp_path)
         return None
 
 # =============================
-# 4. تشغيل Flow في SendPulse
+# 4. دالة بديلة لتحميل الصورة باستخدام imgbb
 # =============================
-def run_flow(contact_id, channel, flow_type):
+def upload_to_imgbb(image_bytes):
     try:
-        token = get_sendpulse_token()
-        if not token:
-            logger.error("No token available for SendPulse")
-            return False
-
-        # تحديد الـ endpoint بناءً على القناة
-        if channel == "telegram":
-            url = "https://api.sendpulse.com/telegram/flows/run"
-        elif channel == "messenger":
-            url = "https://api.sendpulse.com/messenger/flows/run"
-        else:
-            logger.error(f"Unknown channel for flow: {channel}")
-            return False
-
-        # الحصول على الـ flow_id المناسب للقناة ونوع التحويل
-        flow_id = FLOW_IDS.get(channel, {}).get(flow_type)
-        if not flow_id:
-            logger.error(f"No flow_id defined for channel: {channel} and flow type: {flow_type}")
-            return False
-
+        # تحويل الصورة إلى base64
+        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # استخدام imgbb API (مجاني)
+        api_key = "your_imgbb_api_key"  # يمكنك الحصول على مفتاح مجاني من imgbb.com
+        url = "https://api.imgbb.com/1/upload"
+        
         payload = {
-            "contact_id": contact_id,
-            "flow_id": flow_id,
-            "external_data": {
-                "tracking_number": "1234-0987-5678-9012"
-            }
+            "key": api_key,
+            "image": image_b64,
+            "expiration": 600  # 10 دقائق
         }
-
-        headers = {"Authorization": f"Bearer {token}"}
         
-        logger.info(f"Running {flow_type} flow for contact {contact_id} on channel {channel}")
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response = requests.post(url, data=payload, timeout=30)
         
         if response.status_code == 200:
-            logger.info(f"{flow_type} flow started successfully for client {contact_id} on channel {channel}")
-            return True
+            result = response.json()
+            if result.get("success"):
+                image_url = result["data"]["url"]
+                logger.info(f"✅ Image uploaded to imgbb: {image_url}")
+                return image_url
+            else:
+                logger.error(f"❌ imgbb upload failed: {result}")
+                return None
         else:
-            logger.error(f"Failed to start {flow_type} flow for {contact_id}: {response.status_code} - {response.text}")
-            return False
+            logger.error(f"❌ imgbb upload failed with status: {response.status_code}")
+            return None
+            
     except Exception as e:
-        logger.error(f"Error running flow: {e}")
-        return False
+        logger.error(f"❌ Error uploading to imgbb: {e}")
+        return None
 
 # =============================
-# 5. إرسال رسالة للعميل عبر SendPulse
-# =============================
-def send_to_client(contact_id, text, channel):
-    try:
-        token = get_sendpulse_token()
-        if not token:
-            logger.error("No token available for SendPulse")
-            return False
-
-        if channel == "telegram":
-            url = "https://api.sendpulse.com/telegram/contacts/sendText"
-            payload = {"contact_id": contact_id, "text": text}
-        elif channel == "messenger":
-            url = "https://api.sendpulse.com/messenger/contacts/sendText"
-            payload = {
-                "contact_id": contact_id,
-                "message_type": "RESPONSE",
-                "message_tag": "ACCOUNT_UPDATE",
-                "text": text
-            }
-        else:
-            logger.error(f"Unknown channel: {channel}")
-            return False
-
-        headers = {"Authorization": f"Bearer {token}"}
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        
-        if response.status_code == 200:
-            logger.info(f"Message sent to {channel} client {contact_id}")
-            return True
-        else:
-            logger.error(f"Failed to send message to {channel} {contact_id}: {response.status_code}")
-            return False
-    except Exception as e:
-        logger.error(f"Error sending to {channel} client: {e}")
-        return False
-
-# =============================
-# 6. إرسال صورة للعميل عبر SendPulse
+# 5. إرسال صورة للعميل عبر SendPulse - محسنة
 # =============================
 def send_photo_to_client(contact_id, photo_url, channel):
     try:
@@ -225,20 +214,25 @@ def send_photo_to_client(contact_id, photo_url, channel):
             return False
 
         headers = {"Authorization": f"Bearer {token}"}
+        logger.info(f"📤 Sending photo to {channel} client {contact_id}")
+        logger.info(f"📎 Photo URL: {photo_url}")
+        
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         
+        logger.info(f"📨 SendPulse response status: {response.status_code}")
+        
         if response.status_code == 200:
-            logger.info(f"Photo sent successfully to {channel} client {contact_id}")
+            logger.info(f"✅ Photo sent successfully to {channel} client {contact_id}")
             return True
         else:
-            logger.error(f"Failed to send photo to {channel} {contact_id}: {response.status_code}")
+            logger.error(f"❌ Failed to send photo to {channel} {contact_id}: {response.status_code} - {response.text}")
             return False
     except Exception as e:
-        logger.error(f"Error sending photo to {channel} client: {e}")
+        logger.error(f"❌ Error sending photo to {channel} client: {e}")
         return False
 
 # =============================
-# 7. إرسال رسالة إلى جروب تليجرام - محسنة للتتبع
+# 6. إرسال رسالة إلى جروب تليجرام
 # =============================
 def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
     try:
@@ -320,10 +314,9 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
         response = requests.post(url, json=payload, timeout=30)
         
         if response.status_code == 200:
-            result = response.json()
-            message_id = result['result']['message_id']
+            message_id = response.json()['result']['message_id']
             
-            # ✅ **الإصلاح الأساسي: حفظ الطلب في الذاكرة**
+            # حفظ في الذاكرة لتتبع الطلبات
             if contact_id not in client_messages:
                 client_messages[contact_id] = {}
             
@@ -333,14 +326,7 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
                 'channel': channel
             }
             
-            logger.info(f"✅ Message sent and stored in memory: contact_id={contact_id}, scenario={scenario}")
-            logger.info(f"📊 Current orders in memory: {len(client_messages)}")
-            
-            # ✅ **سجل إضافي للتأكد من الحفظ**
-            if contact_id in client_messages and scenario in client_messages[contact_id]:
-                stored_time = client_messages[contact_id][scenario]['timestamp']
-                logger.info(f"💾 CONFIRMED: Order {contact_id} stored at {stored_time}")
-            
+            logger.info(f"✅ Message sent and stored: contact_id={contact_id}, scenario={scenario}")
             return True
         else:
             logger.error(f"❌ Failed to send to Telegram: {response.status_code}")
@@ -350,187 +336,7 @@ def send_scenario_message_to_telegram(message, contact_id, channel, scenario):
         return False
 
 # =============================
-# 8. التحقق من الطلبات المتأخرة - محسنة تماماً
-# =============================
-def check_delayed_orders():
-    try:
-        logger.info("🔍 === STARTING DELAYED ORDERS CHECK ===")
-        logger.info(f"📊 Total contacts in memory: {len(client_messages)}")
-        
-        if not client_messages:
-            logger.info("📭 No orders in memory to check")
-            return
-            
-        current_time = datetime.now()
-        delayed_contacts = []
-
-        # ✅ **فحص تفصيلي لكل طلب**
-        for contact_id, scenarios in list(client_messages.items()):
-            logger.info(f"  👤 Checking contact: {contact_id}")
-            
-            if 'order' in scenarios:
-                order_data = scenarios['order']
-                order_time = order_data['timestamp']
-                time_diff = current_time - order_time
-                minutes_passed = int(time_diff.total_seconds() / 60)
-                seconds_passed = int(time_diff.total_seconds())
-                
-                logger.info(f"    📝 Order age: {minutes_passed} minutes ({seconds_passed} seconds)")
-                
-                # ✅ **الشرط الأساسي: إذا مرت أكثر من 5 دقائق**
-                if seconds_passed > 300:  # 300 ثانية = 5 دقائق
-                    if 'delay_alert_sent' not in scenarios:
-                        delayed_contacts.append({
-                            'contact_id': contact_id,
-                            'order_data': order_data,
-                            'minutes_passed': minutes_passed
-                        })
-                        logger.info(f"    🚨 DELAYED ORDER FOUND: {contact_id} - {minutes_passed} minutes")
-                    else:
-                        logger.info(f"    ℹ️ Alert already sent for: {contact_id}")
-                else:
-                    remaining = 300 - seconds_passed
-                    logger.info(f"    ✅ Order still fresh: {contact_id} - {remaining} seconds remaining")
-
-        logger.info(f"📊 Check completed: {len(delayed_contacts)} delayed orders found")
-
-        # ✅ **إرسال تنبيهات للطلبات المتأخرة**
-        for delayed in delayed_contacts:
-            contact_id = delayed['contact_id']
-            order_data = delayed['order_data']
-            minutes_passed = delayed['minutes_passed']
-            
-            # التحقق النهائي قبل الإرسال
-            if contact_id in client_messages and 'delay_alert_sent' not in client_messages[contact_id]:
-                channel = order_data.get('channel', 'telegram')
-                
-                delay_message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n"
-                delay_message += f"🆔 الرقم التعريفي: {contact_id}\n"
-                delay_message += f"⏰ الوقت المنقضي: {minutes_passed} دقائق\n"
-                delay_message += f"📞 القناة: {channel}\n"
-                delay_message += f"🔔 تم إرسال الطلب في: {order_data['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}"
-                
-                # إرسال رسالة تنبيه التأخر
-                success = send_scenario_message_to_telegram(delay_message, contact_id, channel, "delay")
-                if success:
-                    logger.info(f"✅ Delay alert sent successfully for contact: {contact_id}")
-                    
-                    # ✅ **وضع علامة أن تنبيه التأخر تم إرساله**
-                    client_messages[contact_id]['delay_alert_sent'] = {
-                        'timestamp': datetime.now(),
-                        'alert_minutes': minutes_passed
-                    }
-                else:
-                    logger.error(f"❌ Failed to send delay alert for contact: {contact_id}")
-            else:
-                logger.info(f"ℹ️ Delay alert already sent or contact not found: {contact_id}")
-                
-        logger.info(f"📊 Delayed orders processing completed. Sent {len(delayed_contacts)} alerts")
-        
-    except Exception as e:
-        logger.error(f"❌ Error in check_delayed_orders: {e}")
-
-# =============================
-# 9. بدء مؤقت للتحقق من الطلبات المتأخرة - محسنة
-# =============================
-def start_delayed_orders_checker():
-    def checker_loop():
-        logger.info("🔄 === STARTING DELAYED ORDERS CHECKER LOOP ===")
-        check_count = 0
-        
-        while True:
-            try:
-                check_count += 1
-                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                logger.info(f"🔍 Check #{check_count} at {current_time}")
-                logger.info(f"📊 Current active orders: {len(client_messages)}")
-                
-                # ✅ **سجل تفصيلي للطلبات النشطة**
-                if client_messages:
-                    logger.info("📋 Active orders details:")
-                    for contact_id, scenarios in client_messages.items():
-                        if 'order' in scenarios:
-                            order_data = scenarios['order']
-                            time_diff = datetime.now() - order_data['timestamp']
-                            minutes_passed = int(time_diff.total_seconds() / 60)
-                            has_alert = 'delay_alert_sent' in scenarios
-                            status = "DELAYED" if minutes_passed >= 5 else "FRESH"
-                            
-                            logger.info(f"   - {contact_id}: {minutes_passed}m ({status}), alert: {has_alert}")
-                
-                # ✅ **تشغيل الفحص**
-                check_delayed_orders()
-                
-                # ✅ **الانتظار 30 ثانية بين الفحوصات**
-                logger.info(f"⏳ Waiting 30 seconds until next check...")
-                time.sleep(30)
-                
-            except Exception as e:
-                logger.error(f"❌ Error in delayed orders checker loop: {e}")
-                time.sleep(30)
-    
-    thread = threading.Thread(target=checker_loop)
-    thread.daemon = True
-    thread.start()
-    logger.info("✅ Enhanced delayed orders checker started successfully")
-
-# =============================
-# 10. استقبال Webhook من SendPulse - محسنة
-# =============================
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        data = request.get_json()
-        logger.info(f"📩 === NEW WEBHOOK RECEIVED ===")
-
-        if not data:
-            return {"status": "error", "message": "No data received"}, 400
-
-        contact_id = data.get("contact_id", "")
-        channel = data.get("channel", "telegram")
-        scenario = data.get("scenario", "order")
-        neworder = data.get("neworder", "")
-
-        if not contact_id:
-            logger.error("❌ No contact_id received in webhook")
-            return {"status": "error", "message": "No contact_id"}, 400
-
-        logger.info(f"📝 Processing: scenario={scenario}, contact_id={contact_id}, channel={channel}")
-        logger.info(f"📦 neworder data present: {bool(neworder)}")
-
-        # ✅ **بناء الرسالة من neworder فقط - بدون تنسيق**
-        if neworder:
-            if isinstance(neworder, dict):
-                formatted_order = json.dumps(neworder, ensure_ascii=False, indent=2)
-            else:
-                formatted_order = str(neworder)
-        else:
-            formatted_order = "لا توجد بيانات"
-
-        # ✅ **بناء الرسالة بناءً على السيناريو**
-        if scenario == "delay":
-            message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n{formatted_order}"
-        elif scenario == "photo":
-            message = f"📸 <b>طلب صورة إضافية من العميل</b>\n{formatted_order}"
-        else:  # order
-            message = f"📩 <b>طلب جديد</b>\n{formatted_order}"
-
-        # ✅ **إرسال الرسالة وحفظها في الذاكرة**
-        success = send_scenario_message_to_telegram(message, contact_id, channel, scenario)
-        
-        if success:
-            logger.info(f"✅ Webhook processed successfully for {contact_id}")
-            return {"status": "ok"}, 200
-        else:
-            logger.error(f"❌ Failed to process webhook for {contact_id}")
-            return {"status": "error", "message": "Failed to send to Telegram"}, 500
-            
-    except Exception as e:
-        logger.error(f"❌ Error in webhook: {e}")
-        return {"status": "error", "message": str(e)}, 500
-
-# =============================
-# 11. استقبال ضغط الأزرار + الصور من التليجرام
+# 7. استقبال ضغط الأزرار + الصور من التليجرام - محسنة تماماً
 # =============================
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
@@ -543,6 +349,7 @@ def telegram_webhook():
             return {"status": "error"}, 500
 
         data = request.get_json()
+        logger.info(f"📨 Received Telegram update")
 
         if not data:
             return {"status": "ok"}, 200
@@ -555,7 +362,7 @@ def telegram_webhook():
             message_id = callback["message"]["message_id"]
             callback_data = callback["data"]
 
-            logger.info(f"🔄 Callback received: {callback_data}")
+            logger.info(f"🔄 Callback received: {callback_data} from chat {chat_id}")
 
             # الرد على callback query
             requests.post(
@@ -573,7 +380,10 @@ def telegram_webhook():
 
             # معالجة الإجراءات
             if action == "done":
+                # إرسال تأكيد للعميل
                 send_to_client(contact_id, "✅ تم تنفيذ طلبك بنجاح", channel)
+                
+                # تعديل الرسالة الأصلية
                 edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
                 edit_payload = {
                     "chat_id": chat_id,
@@ -581,20 +391,27 @@ def telegram_webhook():
                     "text": "✅ تم تنفيذ الطلب بنجاح",
                     "parse_mode": "HTML"
                 }
-                requests.post(edit_url, json=edit_payload, timeout=30)
-                delete_message_after_delay(chat_id, message_id, 5)
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
                 
-                # ✅ **مسح من الذاكرة**
-                if contact_id in client_messages:
-                    if scenario in client_messages[contact_id]:
+                if edit_response.status_code == 200:
+                    # حذف الرسالة بعد 5 ثواني
+                    delete_message_after_delay(chat_id, message_id, 5)
+                    logger.info(f"🗑️ Scheduled deletion for message {message_id}")
+                    
+                    # مسح من الذاكرة
+                    if contact_id in client_messages and scenario in client_messages[contact_id]:
                         del client_messages[contact_id][scenario]
+                        if not client_messages[contact_id]:
+                            del client_messages[contact_id]
                         logger.info(f"🧹 Removed {scenario} from memory for {contact_id}")
-                    if not client_messages[contact_id]:
-                        del client_messages[contact_id]
-                        logger.info(f"🧹 Removed contact {contact_id} from memory")
+                else:
+                    logger.error(f"❌ Failed to edit message: {edit_response.status_code}")
                 
             elif action == "cancel":
+                # إرسال تأكيد إلغاء للعميل
                 send_to_client(contact_id, "❌ تم إلغاء طلبك.", channel)
+                
+                # تعديل الرسالة الأصلية
                 edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
                 edit_payload = {
                     "chat_id": chat_id,
@@ -602,33 +419,45 @@ def telegram_webhook():
                     "text": "❌ تم إلغاء الطلب",
                     "parse_mode": "HTML"
                 }
-                requests.post(edit_url, json=edit_payload, timeout=30)
-                delete_message_after_delay(chat_id, message_id, 5)
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
                 
-                # ✅ **مسح من الذاكرة**
-                if contact_id in client_messages:
-                    if scenario in client_messages[contact_id]:
+                if edit_response.status_code == 200:
+                    # حذف الرسالة بعد 5 ثواني
+                    delete_message_after_delay(chat_id, message_id, 5)
+                    logger.info(f"🗑️ Scheduled deletion for message {message_id}")
+                    
+                    # مسح من الذاكرة
+                    if contact_id in client_messages and scenario in client_messages[contact_id]:
                         del client_messages[contact_id][scenario]
+                        if not client_messages[contact_id]:
+                            del client_messages[contact_id]
                         logger.info(f"🧹 Removed {scenario} from memory for {contact_id}")
-                    if not client_messages[contact_id]:
-                        del client_messages[contact_id]
-                        logger.info(f"🧹 Removed contact {contact_id} from memory")
+                else:
+                    logger.error(f"❌ Failed to edit message: {edit_response.status_code}")
                 
             elif action == "sendpic":
+                # حفظ طلب إرسال الصورة
                 pending_photos[str(chat_id)] = {
                     'contact_id': contact_id,
                     'channel': channel,
                     'scenario': scenario,
                     'request_message_id': message_id
                 }
+                
+                # تعديل الرسالة لتظهر طلب رفع الصورة
                 edit_url = f"https://api.telegram.org/bot{token}/editMessageText"
                 edit_payload = {
                     "chat_id": chat_id,
                     "message_id": message_id,
-                    "text": "📷 من فضلك ارفع صورة في الجروب وسأقوم بإرسالها للعميل",
+                    "text": "📷 من فضلك ارفع الصورة الآن في هذه المحادثة وسأقوم بإرسالها للعميل",
                     "parse_mode": "HTML"
                 }
-                requests.post(edit_url, json=edit_payload, timeout=30)
+                edit_response = requests.post(edit_url, json=edit_payload, timeout=30)
+                
+                if edit_response.status_code == 200:
+                    logger.info(f"✅ Photo request message updated for chat {chat_id}")
+                else:
+                    logger.error(f"❌ Failed to update photo request message: {edit_response.status_code}")
 
             elif action in ["transfer_minus", "transfer_plus"]:
                 flow_type = action
@@ -641,6 +470,7 @@ def telegram_webhook():
                 else:
                     confirmation_message = f"❌ فشل {flow_name} للطلب"
                 
+                # إرسال رسالة تأكيد
                 confirmation_response = requests.post(
                     f"https://api.telegram.org/bot{token}/sendMessage",
                     json={
@@ -654,24 +484,34 @@ def telegram_webhook():
                 if confirmation_response.status_code == 200:
                     confirmation_data = confirmation_response.json()
                     confirmation_message_id = confirmation_data['result']['message_id']
+                    # حذف رسالة التأكيد بعد 5 ثواني
                     delete_message_after_delay(chat_id, confirmation_message_id, 5)
+                    logger.info(f"🗑️ Scheduled deletion for confirmation message {confirmation_message_id}")
+                else:
+                    logger.error(f"❌ Failed to send confirmation message")
 
-        # التعامل مع الصور
+        # التعامل مع الصور - الجزء المحسّن
         elif "message" in data and "photo" in data["message"]:
             message_data = data["message"]
             chat_id = message_data["chat"]["id"]
             message_id = message_data["message_id"]
 
+            logger.info(f"🖼️ Photo received in chat {chat_id}, message_id: {message_id}")
+
             if str(chat_id) in pending_photos:
                 pending_data = pending_photos.pop(str(chat_id))
                 contact_id = pending_data['contact_id']
                 channel = pending_data['channel']
+                scenario = pending_data['scenario']
                 request_message_id = pending_data.get('request_message_id')
 
-                # الحصول على الصورة
+                logger.info(f"🔄 Processing photo for contact {contact_id} on channel {channel}")
+
+                # الحصول على أعلى دقة للصورة
                 photo = message_data["photo"][-1]
                 file_id = photo["file_id"]
 
+                # الحصول على معلومات الملف
                 file_info_url = f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}"
                 file_info_response = requests.get(file_info_url, timeout=30)
                 
@@ -681,27 +521,82 @@ def telegram_webhook():
                         file_path = file_info["result"]["file_path"]
                         file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
 
-                        # إرسال الصورة للعميل
-                        success = send_photo_to_client(contact_id, file_url, channel)
+                        logger.info(f"📎 Telegram file URL: {file_url}")
                         
-                        if success:
-                            if request_message_id:
-                                delete_telegram_message(chat_id, request_message_id)
-                            delete_telegram_message(chat_id, message_id)
+                        # 1. تحميل الصورة وإنشاء رابط مؤقت
+                        temp_photo_url = download_and_create_temp_url(file_url, token, contact_id)
+                        
+                        if temp_photo_url:
+                            # 2. إرسال الصورة للعميل
+                            success = send_photo_to_client(contact_id, temp_photo_url, channel)
                             
-                            confirmation_response = requests.post(
+                            if success:
+                                logger.info(f"✅ Photo sent successfully to client {contact_id}")
+                                
+                                # 3. مسح الرسائل بعد النجاح
+                                
+                                # مسح رسالة طلب الصورة (إذا كانت موجودة)
+                                if request_message_id:
+                                    delete_success = delete_telegram_message(chat_id, request_message_id)
+                                    if delete_success:
+                                        logger.info(f"🗑️ Deleted photo request message {request_message_id}")
+                                    else:
+                                        logger.error(f"❌ Failed to delete photo request message {request_message_id}")
+                                
+                                # مسح الصورة المرسلة في الجروب
+                                delete_success = delete_telegram_message(chat_id, message_id)
+                                if delete_success:
+                                    logger.info(f"🗑️ Deleted uploaded photo message {message_id}")
+                                else:
+                                    logger.error(f"❌ Failed to delete uploaded photo message {message_id}")
+                                
+                                # 4. إرسال رسالة تأكيد
+                                confirmation_response = requests.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={
+                                        "chat_id": chat_id,
+                                        "text": f"✅ تم إرسال الصورة للعميل بنجاح"
+                                    },
+                                    timeout=30
+                                )
+                                
+                                if confirmation_response.status_code == 200:
+                                    confirmation_data = confirmation_response.json()
+                                    confirmation_message_id = confirmation_data['result']['message_id']
+                                    # حذف رسالة التأكيد بعد 5 ثواني
+                                    delete_message_after_delay(chat_id, confirmation_message_id, 5)
+                                    logger.info(f"🗑️ Scheduled deletion for confirmation message {confirmation_message_id}")
+                                else:
+                                    logger.error(f"❌ Failed to send confirmation message")
+                                
+                            else:
+                                logger.error(f"❌ Failed to send photo to client {contact_id}")
+                                # إرسال رسالة خطأ
+                                requests.post(
+                                    f"https://api.telegram.org/bot{token}/sendMessage",
+                                    json={
+                                        "chat_id": chat_id,
+                                        "text": f"❌ فشل إرسال الصورة للعميل"
+                                    },
+                                    timeout=30
+                                )
+                        else:
+                            logger.error("❌ Failed to create temporary photo URL")
+                            # إرسال رسالة خطأ
+                            requests.post(
                                 f"https://api.telegram.org/bot{token}/sendMessage",
                                 json={
                                     "chat_id": chat_id,
-                                    "text": f"✅ تم إرسال الصورة للعميل بنجاح"
+                                    "text": f"❌ فشل تحميل الصورة، حاول مرة أخرى"
                                 },
                                 timeout=30
                             )
-                            
-                            if confirmation_response.status_code == 200:
-                                confirmation_data = confirmation_response.json()
-                                confirmation_message_id = confirmation_data['result']['message_id']
-                                delete_message_after_delay(chat_id, confirmation_message_id, 5)
+                    else:
+                        logger.error(f"❌ File info not OK: {file_info}")
+                else:
+                    logger.error(f"❌ Failed to get file info: {file_info_response.status_code}")
+            else:
+                logger.info(f"ℹ️ Photo received but no pending request for chat {chat_id}")
 
         return {"status": "ok"}, 200
         
@@ -710,101 +605,116 @@ def telegram_webhook():
         return {"status": "error", "message": str(e)}, 500
 
 # =============================
-# 12. صفحات المراقبة والتصحيح
+# 8. دوال الخدمات الأخرى (تبقى كما هي)
 # =============================
-@app.route("/")
-def home():
-    return {
-        "status": "running",
-        "service": "OrderTaker - Fixed Delay System",
-        "timestamp": time.time(),
-        "active_orders": len(client_messages)
-    }
-
-@app.route("/health")
-def health():
-    return {"status": "healthy", "timestamp": time.time(), "active_orders": len(client_messages)}, 200
-
-@app.route("/active_orders")
-def active_orders():
+def get_sendpulse_token():
     try:
-        orders_info = []
-        current_time = datetime.now()
+        client_id = os.getenv("SENDPULSE_API_ID")
+        client_secret = os.getenv("SENDPULSE_API_SECRET")
         
-        for contact_id, scenarios in client_messages.items():
-            if 'order' in scenarios:
-                order_data = scenarios['order']
-                time_diff = current_time - order_data['timestamp']
-                minutes_passed = int(time_diff.total_seconds() / 60)
-                has_alert = 'delay_alert_sent' in scenarios
-                
-                orders_info.append({
-                    'contact_id': contact_id,
-                    'channel': order_data.get('channel', 'telegram'),
-                    'timestamp': order_data['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
-                    'minutes_passed': minutes_passed,
-                    'is_delayed': minutes_passed >= 5,
-                    'has_delay_alert': has_alert
-                })
-        
-        return {
-            "status": "ok",
-            "active_orders_count": len(orders_info),
-            "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S'),
-            "total_contacts_in_memory": len(client_messages),
-            "orders": orders_info
+        if not client_id or not client_secret:
+            logger.error("SendPulse API credentials not set")
+            return None
+            
+        url = "https://api.sendpulse.com/oauth/access_token"
+        payload = {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret
         }
+        response = requests.post(url, data=payload, timeout=30)
+        data = response.json()
+        token = data.get("access_token")
+        if not token:
+            logger.error("Failed to get SendPulse token")
+        return token
     except Exception as e:
-        logger.error(f"❌ Error in active_orders: {e}")
-        return {"status": "error", "message": str(e)}, 500
+        logger.error(f"Error getting SendPulse token: {e}")
+        return None
 
-@app.route("/debug_memory")
-def debug_memory():
+def send_to_client(contact_id, text, channel):
     try:
-        debug_info = {}
-        for contact_id, scenarios in client_messages.items():
-            debug_info[contact_id] = {}
-            for scenario, data in scenarios.items():
-                if scenario == 'order':
-                    time_diff = datetime.now() - data['timestamp']
-                    debug_info[contact_id][scenario] = {
-                        'minutes_old': int(time_diff.total_seconds() / 60),
-                        'timestamp': data['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
-                        'channel': data.get('channel', 'telegram')
-                    }
-        
-        return {
-            "status": "ok",
-            "total_contacts": len(client_messages),
-            "memory_contents": debug_info
-        }
-    except Exception as e:
-        logger.error(f"❌ Error in debug_memory: {e}")
-        return {"status": "error", "message": str(e)}, 500
+        token = get_sendpulse_token()
+        if not token:
+            logger.error("No token available for SendPulse")
+            return False
 
-@app.route("/trigger_check")
-def trigger_check():
-    try:
-        logger.info("🔔 Manual delayed orders check triggered via API")
-        check_delayed_orders()
-        return {
-            "status": "ok", 
-            "message": "Delayed orders check triggered manually",
-            "active_contacts": len(client_messages)
-        }
+        if channel == "telegram":
+            url = "https://api.sendpulse.com/telegram/contacts/sendText"
+            payload = {"contact_id": contact_id, "text": text}
+        elif channel == "messenger":
+            url = "https://api.sendpulse.com/messenger/contacts/sendText"
+            payload = {
+                "contact_id": contact_id,
+                "message_type": "RESPONSE",
+                "message_tag": "ACCOUNT_UPDATE",
+                "text": text
+            }
+        else:
+            logger.error(f"Unknown channel: {channel}")
+            return False
+
+        headers = {"Authorization": f"Bearer {token}"}
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            logger.info(f"Message sent to {channel} client {contact_id}")
+            return True
+        else:
+            logger.error(f"Failed to send message to {channel} {contact_id}: {response.status_code}")
+            return False
     except Exception as e:
-        logger.error(f"❌ Error in trigger_check: {e}")
-        return {"status": "error", "message": str(e)}, 500
+        logger.error(f"Error sending to {channel} client: {e}")
+        return False
+
+def run_flow(contact_id, channel, flow_type):
+    try:
+        token = get_sendpulse_token()
+        if not token:
+            logger.error("No token available for SendPulse")
+            return False
+
+        if channel == "telegram":
+            url = "https://api.sendpulse.com/telegram/flows/run"
+        elif channel == "messenger":
+            url = "https://api.sendpulse.com/messenger/flows/run"
+        else:
+            logger.error(f"Unknown channel for flow: {channel}")
+            return False
+
+        flow_id = FLOW_IDS.get(channel, {}).get(flow_type)
+        if not flow_id:
+            logger.error(f"No flow_id defined for channel: {channel} and flow type: {flow_type}")
+            return False
+
+        payload = {
+            "contact_id": contact_id,
+            "flow_id": flow_id,
+            "external_data": {
+                "tracking_number": "1234-0987-5678-9012"
+            }
+        }
+
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        logger.info(f"Running {flow_type} flow for contact {contact_id} on channel {channel}")
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            logger.info(f"{flow_type} flow started successfully for client {contact_id} on channel {channel}")
+            return True
+        else:
+            logger.error(f"Failed to start {flow_type} flow for {contact_id}: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error running flow: {e}")
+        return False
 
 # =============================
-# 13. بدء التطبيق
+# 9. بدء التطبيق
 # =============================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    logger.info(f"🚀 Starting FIXED OrderTaker server on port {port}")
-    
-    # بدء نظام التحقق من الطلبات المتأخرة
-    start_delayed_orders_checker()
-    logger.info("✅ Fixed delayed orders checker initialized")
-    
-    app.run(host="0.0.0.0", port=port, debug=False)                
+    logger.info(f"🚀 Starting Photo-Fixed OrderTaker server on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
