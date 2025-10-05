@@ -8,6 +8,7 @@ import shutil
 import threading
 from datetime import datetime, timedelta
 import re
+import json
 
 # إعداد logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -377,72 +378,104 @@ def send_photo_to_client(contact_id, photo_url, channel):
         return False
 
 # =============================
-# 12. دالة تنسيق بيانات الطلب - محسنة
+# 12. دالة تنسيق بيانات الطلب - محسنة للتعامل مع JSON
 # =============================
-def format_order_data(order_text):
+def format_order_data(order_data):
     """
     تنسيق بيانات الطلب لتكون أكثر تنظيماً ووضوحاً
+    يدعم كل من النص العادي وكائن JSON
     """
     try:
-        # إذا كان النص فارغاً
-        if not order_text or not order_text.strip():
-            return order_text
+        # إذا كانت البيانات كائن JSON (قاموس)
+        if isinstance(order_data, dict):
+            formatted_lines = []
             
-        # إذا كان النص يحتوي على رموز تعبيرية، نعتقد أنه منظم مسبقاً
-        if any(emoji in order_text for emoji in ['👤', '📱', '🛒', '💰', '💵', '💳', '🏦', '🧾', '💎', '💻', '🆔', '📝']):
-            return order_text
-
-        formatted_lines = []
+            # تخطيط الحقول بناءً على المفاتيح
+            field_mapping = {
+                'full_name': '👤 العميل',
+                'username': '📱 التليجرام', 
+                'Agent': '🛒 الشفت',
+                'PriceIN': '💰 سعر البيع',
+                'much2': '💵 المبلغ',
+                'PaidBy': '💳 طريقة الدفع',
+                'CashControl': '🏦 المحفظة',
+                'ShortUrl': '🧾 الإيصال',
+                'much': '💎 الرصيد',
+                'Platform': '💻 المنصة',
+                'redid': '🆔 الرقم التعريفي',
+                'Note': '📝 الملاحظات'
+            }
+            
+            for field, emoji_label in field_mapping.items():
+                value = order_data.get(field, '')
+                if value and str(value).strip():
+                    formatted_lines.append(f"{emoji_label}: {value}")
+            
+            return "\n".join(formatted_lines)
         
-        # البحث عن الأنماط الشائعة في البيانات
-        patterns = {
-            '👤': [r'العميل\s*(.+)', r'اسم\s*(.+)', r'Name\s*(.+)'],
-            '📱': [r'تليجرام\s*(.+)', r'تيليجرام\s*(.+)', r'@(\w+)', r'username\s*(.+)'],
-            '🛒': [r'شفــت\s*(.+)', r'منتج\s*(.+)', r'Product\s*(.+)', r'Agent\s*(.+)'],
-            '💰': [r'سعـر البيـع\s*(.+)', r'سعر\s*(.+)', r'Price\s*(.+)', r'PriceIN\s*(.+)'],
-            '💵': [r'المبلـغ\s*(.+)', r'مبلغ\s*(.+)', r'Amount\s*(.+)', r'much2\s*(.+)'],
-            '💳': [r'جنيـه\s*(.+)', r'دفع\s*(.+)', r'Payment\s*(.+)', r'PaidBy\s*(.+)'],
-            '🏦': [r'المحفظـة\s*(.+)', r'محفظة\s*(.+)', r'Wallet\s*(.+)', r'CashControl\s*(.+)'],
-            '🧾': [r'الإيصـال\s*(.+)', r'إيصال\s*(.+)', r'Receipt\s*(.+)', r'ShortUrl\s*(.+)'],
-            '💎': [r'الرصيــد\s*(.+)', r'رصيد\s*(.+)', r'Balance\s*(.+)', r'much\s*(.+)'],
-            '💻': [r'منصة\s*(.+)', r'Platform\s*(.+)', r'\$\s*(.+)'],
-            '🆔': [r'ORDER\s*(.+)', r'رقم\s*(.+)', r'ID\s*(.+)', r'redid\s*(.+)'],
-            '📝': [r'ملاحظ\s*(.+)', r'Note\s*(.+)', r'ملاحظة\s*(.+)']
-        }
-        
-        # تقسيم النص إلى أسطر إذا كان يحتوي على فواصل
-        lines = order_text.split('\n')
-        if len(lines) == 1:
-            # إذا كان سطر واحد، حاول تقسيمه بفواصل أخرى
-            lines = re.split(r'[،,;|]', order_text)
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+        # إذا كانت البيانات نصاً عادياً
+        elif isinstance(order_data, str):
+            # إذا كان النص فارغاً
+            if not order_data or not order_data.strip():
+                return order_data
                 
-            matched = False
-            # البحث عن أنماط في السطر
-            for emoji, pattern_list in patterns.items():
-                for pattern in pattern_list:
-                    match = re.search(pattern, line, re.IGNORECASE)
-                    if match:
-                        value = match.group(1).strip()
-                        formatted_lines.append(f"{emoji} {value}")
-                        matched = True
-                        break
-                if matched:
-                    break
+            # إذا كان النص يحتوي على رموز تعبيرية، نعتقد أنه منظم مسبقاً
+            if any(emoji in order_data for emoji in ['👤', '📱', '🛒', '💰', '💵', '💳', '🏦', '🧾', '💎', '💻', '🆔', '📝']):
+                return order_data
+
+            formatted_lines = []
             
-            # إذا لم يتم العثور على نمط، أضف السطر كما هو مع رمز عام
-            if not matched:
-                formatted_lines.append(f"📌 {line}")
-        
-        return "\n".join(formatted_lines)
+            # البحث عن الأنماط الشائعة في البيانات
+            patterns = {
+                '👤': [r'العميل\s*(.+)', r'اسم\s*(.+)', r'Name\s*(.+)'],
+                '📱': [r'تليجرام\s*(.+)', r'تيليجرام\s*(.+)', r'@(\w+)', r'username\s*(.+)'],
+                '🛒': [r'شفــت\s*(.+)', r'منتج\s*(.+)', r'Product\s*(.+)', r'Agent\s*(.+)'],
+                '💰': [r'سعـر البيـع\s*(.+)', r'سعر\s*(.+)', r'Price\s*(.+)', r'PriceIN\s*(.+)'],
+                '💵': [r'المبلـغ\s*(.+)', r'مبلغ\s*(.+)', r'Amount\s*(.+)', r'much2\s*(.+)'],
+                '💳': [r'جنيـه\s*(.+)', r'دفع\s*(.+)', r'Payment\s*(.+)', r'PaidBy\s*(.+)'],
+                '🏦': [r'المحفظـة\s*(.+)', r'محفظة\s*(.+)', r'Wallet\s*(.+)', r'CashControl\s*(.+)'],
+                '🧾': [r'الإيصـال\s*(.+)', r'إيصال\s*(.+)', r'Receipt\s*(.+)', r'ShortUrl\s*(.+)'],
+                '💎': [r'الرصيــد\s*(.+)', r'رصيد\s*(.+)', r'Balance\s*(.+)', r'much\s*(.+)'],
+                '💻': [r'منصة\s*(.+)', r'Platform\s*(.+)', r'\$\s*(.+)'],
+                '🆔': [r'ORDER\s*(.+)', r'رقم\s*(.+)', r'ID\s*(.+)', r'redid\s*(.+)'],
+                '📝': [r'ملاحظ\s*(.+)', r'Note\s*(.+)', r'ملاحظة\s*(.+)']
+            }
+            
+            # تقسيم النص إلى أسطر إذا كان يحتوي على فواصل
+            lines = order_data.split('\n')
+            if len(lines) == 1:
+                # إذا كان سطر واحد، حاول تقسيمه بفواصل أخرى
+                lines = re.split(r'[،,;|]', order_data)
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                matched = False
+                # البحث عن أنماط في السطر
+                for emoji, pattern_list in patterns.items():
+                    for pattern in pattern_list:
+                        match = re.search(pattern, line, re.IGNORECASE)
+                        if match:
+                            value = match.group(1).strip()
+                            formatted_lines.append(f"{emoji} {value}")
+                            matched = True
+                            break
+                    if matched:
+                        break
+                
+                # إذا لم يتم العثور على نمط، أضف السطر كما هو مع رمز عام
+                if not matched:
+                    formatted_lines.append(f"📌 {line}")
+            
+            return "\n".join(formatted_lines)
+        else:
+            return str(order_data)
         
     except Exception as e:
         logger.error(f"Error formatting order data: {e}")
-        return order_text
+        return str(order_data)
 
 # =============================
 # 13. إرسال رسالة إلى جروب تليجرام بناءً على السيناريو
@@ -632,7 +665,7 @@ def start_delayed_orders_checker():
     logger.info("✅ Delayed orders checker started successfully")
 
 # =============================
-# 16. استقبال Webhook من SendPulse - محسنة
+# 16. استقبال Webhook من SendPulse - محسنة للتعامل مع JSON في neworder
 # =============================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -676,8 +709,12 @@ def webhook():
         if scenario == "delay":
             # بناء رسالة شكوى التأخر
             if neworder:
-                # استخدام neworder إذا كان متوفراً
-                formatted_order = format_order_data(neworder)
+                # استخدام neworder كما هو بدون تنسيق
+                if isinstance(neworder, dict):
+                    # إذا كان قاموسًا، نحوله إلى سلسلة نصية بشكل بسيط
+                    formatted_order = json.dumps(neworder, ensure_ascii=False, indent=2)
+                else:
+                    formatted_order = str(neworder)
                 message = f"🚨 <b>تنبيه تأخر في التنفيذ</b>\n{formatted_order}"
             else:
                 # استخدام النظام القديم
@@ -705,8 +742,12 @@ def webhook():
         elif scenario == "photo":
             # بناء رسالة طلب الصورة الإضافية
             if neworder:
-                # استخدام neworder إذا كان متوفراً
-                formatted_order = format_order_data(neworder)
+                # استخدام neworder كما هو بدون تنسيق
+                if isinstance(neworder, dict):
+                    # إذا كان قاموسًا، نحوله إلى سلسلة نصية بشكل بسيط
+                    formatted_order = json.dumps(neworder, ensure_ascii=False, indent=2)
+                else:
+                    formatted_order = str(neworder)
                 message = f"📸 <b>طلب صورة إضافية من العميل</b>\n{formatted_order}"
             else:
                 # استخدام النظام القديم
@@ -730,13 +771,17 @@ def webhook():
         else:  # scenario == "order" (الافتراضي)
             # بناء رسالة الطلب الجديد
             if neworder:
-                # استخدام neworder إذا كان متوفراً
-                logger.info(f"📝 Using neworder data: {neworder[:100]}...")
-                formatted_order = format_order_data(neworder)
+                # استخدام neworder كما هو بدون تنسيق
+                logger.info(f"📝 Using neworder data RAW (type: {type(neworder)})")
+                if isinstance(neworder, dict):
+                    # إذا كان قاموسًا، نحوله إلى سلسلة نصية بشكل بسيط
+                    formatted_order = json.dumps(neworder, ensure_ascii=False, indent=2)
+                else:
+                    formatted_order = str(neworder)
                 message = f"📩 <b>طلب جديد</b>\n{formatted_order}"
-                logger.info(f"📝 Formatted order: {formatted_order[:100]}...")
+                logger.info(f"📝 Raw order data preview: {str(formatted_order)[:200]}...")
             else:
-                # استخدام النظام القديم
+                # استخدام النظام القديم مع التنسيق العادي
                 message_lines = []
                 
                 # إضافة الحقول التي تحتوي على قيم فقط بنفس التنسيق المطلوب
@@ -815,7 +860,6 @@ def webhook():
     except Exception as e:
         logger.error(f"❌ Error in webhook: {e}")
         return {"status": "error", "message": str(e)}, 500
-        
 # =============================
 # 17. استقبال ضغط الأزرار + الصور من التليجرام
 # =============================
@@ -1055,7 +1099,7 @@ def telegram_webhook():
     except Exception as e:
         logger.error(f"❌ Error in Telegram webhook: {e}")
         return {"status": "error", "message": str(e)}, 500
-        
+
 # =============================
 # 18. صفحات التحقق
 # =============================
@@ -1150,4 +1194,3 @@ if __name__ == "__main__":
     logger.info("✅ Delayed orders checker initialized")
     
     app.run(host="0.0.0.0", port=port, debug=False)
-         
